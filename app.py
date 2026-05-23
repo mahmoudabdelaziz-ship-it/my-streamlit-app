@@ -114,6 +114,11 @@ def create_driver() -> webdriver.Chrome:
     options.add_argument("--disable-notifications")
     options.add_argument("--disable-popup-blocking") 
     
+    # 🔒 SSL Bypass Arguments to prevent ERR_CONNECTION_CLOSED
+    options.add_argument("--ignore-certificate-errors")
+    options.add_argument("--allow-running-insecure-content")
+    options.add_argument("--disable-ssl-by-default")
+    
     prefs = {
         "download.default_directory": DOWNLOAD_PATH,
         "download.prompt_for_download": False,
@@ -126,17 +131,33 @@ def create_driver() -> webdriver.Chrome:
     wire_options = {}
     if USE_PROXY:
         log.info(f"Setting up secure connection tunnel via premium proxy node...")
-        proxy_url = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_ENDPOINT}"
+        
+        # Clean up endpoints to make sure no accidental whitespaces exist
+        u = PROXY_USER.strip()
+        p = PROXY_PASS.strip()
+        e = PROXY_ENDPOINT.strip()
+        
+        # Ensure standard http:// formatting for the selenium-wire proxy middleware mapping
+        proxy_url = f"http://{u}:{p}@{e}"
+        
         wire_options = {
             'proxy': {
                 'http': proxy_url,
                 'https': proxy_url,
                 'no_proxy': 'localhost,127.0.0.1'
-            }
+            },
+            'verify_ssl': False  # Disables strict SSL checking on the proxy wrapper level
         }
 
+    # Smart Linux Environment Path Detection
     if os.name == 'posix': 
-        options.binary_location = "/usr/bin/chromium"
+        if os.path.exists("/usr/bin/chromium-browser"):
+            options.binary_location = "/usr/bin/chromium-browser"
+        elif os.path.exists("/usr/bin/chromium"):
+            options.binary_location = "/usr/bin/chromium"
+        else:
+            log.warning("⚠️ Chromium path not explicitly found in standard /usr/bin/ directory.")
+            
         driver = webdriver.Chrome(options=options, seleniumwire_options=wire_options)
     else:
         driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options, seleniumwire_options=wire_options)
