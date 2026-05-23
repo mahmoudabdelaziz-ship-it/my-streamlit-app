@@ -2,11 +2,13 @@ import time
 import logging
 import os
 import traceback
+import sys
+import io
 import pandas as pd
 import streamlit as st
 from datetime import datetime, timedelta
 
-# USING SELENIUM-WIRE TO ALLOW PREMIUM AUTHENTICATED PROXIES
+# USING SELENIUM-WIRE FOR THE PREMIUM PROXY AUTHENTICATION
 from seleniumwire import webdriver 
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -15,9 +17,16 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
 # =====================================================================
-# LOGGING CONFIGURATION
+# STREAMLIT PAGE SETUP
 # =====================================================================
+st.set_page_config(page_title="WebPT Automation Tool", page_icon="🤖", layout="centered")
 
+st.title("🤖 WebPT Automated Report Downloader")
+st.write("Click the button below to launch the background headless Chrome browser, route through your New York proxy, and extract your Scheduled Visits report.")
+
+# =====================================================================
+# LOGGING CONFIGURATION & STREAMLIT STREAMER
+# =====================================================================
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -25,22 +34,34 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# Custom utility to redirect standard log prints visually onto the web interface
+class StreamlitLogHandler(io.StringIO):
+    def __init__(self, placeholder):
+        super().__init__()
+        self.placeholder = placeholder
+        self.log_text = ""
+
+    def write(self, msg):
+        if msg.strip():
+            self.log_text += msg + "\n"
+            self.placeholder.code(self.log_text)
+        return len(msg)
+
 def step(msg: str):
-    log.info(f"{'─' * 60}\n  ▶  {msg}\n{'─' * 60}")
+    log.info(f"▶ {msg}")
 
 def ok(msg: str):
-    log.info(f"  ✔  {msg}")
+    log.info(f"✔ {msg}")
 
 def warn(msg: str):
-    log.warning(f"  ⚠  {msg}")
+    log.warning(f"⚠ {msg}")
 
 def fail(msg: str):
-    log.error(f"  ✖  {msg}")
+    log.error(f"✖ {msg}")
 
 # =====================================================================
 # SECURE CONFIGURATION & SETTINGS
 # =====================================================================
-
 WEBPT_URL     = "https://app.webpt.com"
 WAIT_TIMEOUT  = 20
 DOWNLOAD_PATH = os.path.join(os.path.expanduser("~"), "Downloads")
@@ -49,65 +70,42 @@ DOWNLOAD_PATH = os.path.join(os.path.expanduser("~"), "Downloads")
 try:
     USERNAME       = st.secrets["WEBPT_USERNAME"]
     PASSWORD       = st.secrets["WEBPT_PASSWORD"]
-    
-    # Premium Proxy Configurations
     PROXY_USER     = st.secrets["PROXY_USER"]
     PROXY_PASS     = st.secrets["PROXY_PASS"]
     PROXY_ENDPOINT = st.secrets["PROXY_ENDPOINT"]
     USE_PROXY      = True
 except Exception as e:
-    # Fallback placeholders for local environments
     USERNAME      = "Mahmoudabdelaziz.CC"
     PASSWORD      = "CityPT10$"
     USE_PROXY     = False
-    warn("Could not load secrets from Streamlit Cloud. Operating without Proxy context.")
 
 # =====================================================================
-# PANDAS DATA PROCESSING
+# CORE AUTOMATION LOGIC
 # =====================================================================
 
 def process_downloaded_data(csv_path):
     step("Processing CSV Data with Pandas")
     try:
         df = pd.read_csv(csv_path, encoding='utf-8')
-
-        df = df.map(
-            lambda x: x.replace('\u201a', ',').replace('â€š', ',')
-            if isinstance(x, str) else x
-        )
+        df = df.map(lambda x: x.replace('\u201a', ',').replace('â€š', ',') if isinstance(x, str) else x)
         ok("Replaced all corrupted commas with regular commas")
 
-        target_columns = [
-            "Patient ID", "Patient Name", "Clinic Name",
-            "Treating Therapist", "Appointment Type",
-            "Appointment Date", "Visit Status"
-        ]
+        target_columns = ["Patient ID", "Patient Name", "Clinic Name", "Treating Therapist", "Appointment Type", "Appointment Date", "Visit Status"]
         df = df[target_columns]
-
         df["Appointment Date"] = pd.to_datetime(df["Appointment Date"], errors="coerce")
-        df = df.sort_values(
-            by=["Visit Status", "Appointment Date", "Clinic Name"],
-            ascending=[True, True, True]
-        )
+        df = df.sort_values(by=["Visit Status", "Appointment Date", "Clinic Name"], ascending=[True, True, True])
         df["Appointment Date"] = df["Appointment Date"].dt.strftime("%Y-%m-%d")
 
         df.to_csv(csv_path, index=False, encoding='utf-8')
-        ok(f"File processed and overwritten at: {csv_path}")
+        ok(f"File processed and overwritten successfully")
         return csv_path
-        
     except Exception as e:
         fail(f"Pandas processing failed: {e}")
         return None
 
-# =====================================================================
-# DRIVER CREATION (PREMIUM AUTHENTICATED PROXY MIGRATION)
-# =====================================================================
-
 def create_driver() -> webdriver.Chrome:
     step("Launching Headless Chrome browser via Authenticated Premium Proxy")
     options = webdriver.ChromeOptions()
-    
-    # Headless Environment Configurations
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
@@ -125,10 +123,9 @@ def create_driver() -> webdriver.Chrome:
     }
     options.add_experimental_option("prefs", prefs)
     
-    # Build Selenium-Wire parameters to pass the username & password securely
     wire_options = {}
     if USE_PROXY:
-        log.info(f"  → Tunneling network traffic through private proxy node...")
+        log.info(f"Setting up secure connection tunnel via premium proxy node...")
         proxy_url = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_ENDPOINT}"
         wire_options = {
             'proxy': {
@@ -138,245 +135,173 @@ def create_driver() -> webdriver.Chrome:
             }
         }
 
-    # Initialize driver based on execution environment
     if os.name == 'posix': 
         options.binary_location = "/usr/bin/chromium"
         driver = webdriver.Chrome(options=options, seleniumwire_options=wire_options)
     else:
-        driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()),
-            options=options,
-            seleniumwire_options=wire_options
-        )
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options, seleniumwire_options=wire_options)
         
-    # Force Internal Browser Geolocation API to align with NY physical coordinates
-    log.info("  → Aligning device GPS coordinates with New York City baseline...")
-    ny_coordinates = {
-        "latitude": 40.7128,
-        "longitude": -74.0060,
-        "accuracy": 100
-    }
+    ny_coordinates = {"latitude": 40.7128, "longitude": -74.0060, "accuracy": 100}
     driver.execute_cdp_cmd("Emulation.setGeolocationOverride", ny_coordinates)
-    
     ok("Headless browser loaded securely within New York context!")
     return driver
 
-# =====================================================================
-# DOWNLOAD WATCHER
-# =====================================================================
-
 def wait_for_new_csv(download_dir, before_files, timeout=120):
-    log.info(f"  →  Waiting for the file to download...")
+    log.info(f"Waiting for the server file transmission to complete...")
     end_time = time.time() + timeout
-    
     while time.time() < end_time:
         current_files = set(os.listdir(download_dir))
         new_files = current_files - before_files
-        
         new_csvs = [f for f in new_files if f.endswith('.csv')]
         active_downloads = [f for f in new_files if f.endswith('.crdownload') or f.endswith('.tmp')]
         
         if new_csvs and not active_downloads:
             time.sleep(2)
-            file_name = new_csvs[0]
-            ok(f"Download complete: {file_name}")
-            return os.path.join(download_dir, file_name)
+            return os.path.join(download_dir, new_csvs[0])
         time.sleep(1)
-        
     warn("Download timed out.")
     return None
-
-# =====================================================================
-# NAVIGATION & ACTIONS
-# =====================================================================
 
 def login(driver, wait):
     step("Logging in to WebPT")
     driver.get(WEBPT_URL)
-    
     wait.until(EC.presence_of_element_located((By.ID, "username"))).send_keys(USERNAME)
     driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
-
     wait.until(EC.presence_of_element_located((By.ID, "password"))).send_keys(PASSWORD)
     driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
-
     time.sleep(5) 
     try:
         oust_btn = driver.find_element(By.XPATH, "//button[contains(text(), 'Yes, oust them!')]")
         driver.execute_script("arguments[0].click();", oust_btn)
-        ok("Clicked 'Yes, oust them!' button")
+        ok("Handled multiple session 'Oust' validation checkpoint.")
     except:
-        log.info("No 'Oust' prompt appeared.")
-
+        pass
     wait.until(EC.presence_of_element_located((By.LINK_TEXT, "Advanced Search")))
-    ok("Login successful")
+    ok("Login credentials accepted!")
 
 def open_analytics(driver, wait):
-    step("Opening Analytics tab")
+    step("Opening Analytics tab dashboard")
     main_window = driver.current_window_handle
-    
     btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".analytics-icon")))
     driver.execute_script("arguments[0].click();", btn)
-    
     wait.until(EC.new_window_is_opened([main_window]))
     new_window = [w for w in driver.window_handles if w != main_window][0]
     driver.switch_to.window(new_window)
-    
     WebDriverWait(driver, 60).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-    ok("Switched to Analytics dashboard")
+    ok("Switched viewport context to Analytics frame")
 
 def locate_options_button(driver, long_wait):
     try:
-        btn = WebDriverWait(driver, 20).until(
-            EC.element_to_be_clickable((By.ID, "OptionsBtn"))
-        )
-        log.info("Options button found in main content")
-        return btn
+        return WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.ID, "OptionsBtn")))
     except:
-        log.info("Options not in default content – checking iframes")
-
+        pass
     iframes = driver.find_elements(By.TAG_NAME, "iframe")
-    log.info(f"Found {len(iframes)} iframes")
-    for idx, iframe in enumerate(iframes):
+    for iframe in iframes:
         try:
             driver.switch_to.frame(iframe)
-            btn = WebDriverWait(driver, 15).until(
-                EC.element_to_be_clickable((By.ID, "OptionsBtn"))
-            )
-            log.info(f"Found Options button inside iframe #{idx}")
-            return btn
+            return WebDriverWait(driver, 15).until(EC.element_to_be_clickable((By.ID, "OptionsBtn")))
         except:
             driver.switch_to.default_content()
     return None
 
 def navigate_scheduled_visits(driver, wait):
-    step("Navigating to Scheduled Visits Report")
+    step("Navigating to Scheduled Visits Report and mapping column attributes")
     long_wait = WebDriverWait(driver, 60)
     short_wait = WebDriverWait(driver, 15)
-
     page_loaded = False
-    max_attempts = 3
 
-    for attempt in range(max_attempts):
-        log.info(f"  → Attempt {attempt + 1} of {max_attempts} to click Scheduled Visits...")
+    for attempt in range(3):
         try:
-            reports_menu = WebDriverWait(driver, 10).until(EC.element_to_be_clickable(
-                (By.XPATH, "//div[@id='REPORTS'] | //div[text()='REPORTS']")
-            ))
+            reports_menu = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, "//div[@id='REPORTS'] | //div[text()='REPORTS']")))
             driver.execute_script("arguments[0].click();", reports_menu)
             time.sleep(1.5)
-
-            sv_xpath = "//div[@id='scheduled_visits']//span[text()='Scheduled Visits'] | //div[@id='scheduled_visits']"
-            sv_link = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, sv_xpath)))
-            
+            sv_link = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//div[@id='scheduled_visits']//span[text()='Scheduled Visits'] | //div[@id='scheduled_visits']")))
             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", sv_link)
             time.sleep(0.5)
-            
-            try:
-                sv_link.click()
-            except:
-                driver.execute_script("arguments[0].click();", sv_link)
-
-            step("Checking if the click registered...")
-            short_wait.until(EC.presence_of_element_located(
-                (By.CSS_SELECTOR, ".k-grid, #reportContainer, #OptionsBtn")
-            ))
-            
-            ok("Confirmed: Scheduled Visits page is loading!")
+            driver.execute_script("arguments[0].click();", sv_link)
+            short_wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".k-grid, #reportContainer, #OptionsBtn")))
             page_loaded = True
             break
-            
-        except Exception as e:
-            warn("The click didn't register or the page didn't load. Retrying...")
+        except:
+            warn("Click interaction failed to register. Retrying pipeline synchronization block...")
             
     if not page_loaded:
-        raise Exception("Failed to open the Scheduled Visits report after 3 attempts.")
+        raise Exception("Failed to sync structural elements inside Scheduled Visits layout.")
 
-    step("Waiting for background data to finish loading")
     try:
-        long_wait.until_not(EC.presence_of_element_located(
-            (By.CSS_SELECTOR, ".k-loading-mask, .blockUI, .progress-indicator")
-        ))
-        ok("No active loading overlay")
+        long_wait.until_not(EC.presence_of_element_located((By.CSS_SELECTOR, ".k-loading-mask, .blockUI, .progress-indicator")))
     except:
         pass
 
-    step("Looking for Options button")
     options_btn = locate_options_button(driver, long_wait)
     if not options_btn:
-        raise Exception("Could not locate the Options button (ID='OptionsBtn')")
+        raise Exception("Options UI overlay failed to target structural selectors.")
 
-    ok("Options button located – opening column chooser")
     driver.execute_script("arguments[0].click();", options_btn)
     time.sleep(2)
 
-    step("Clearing old selections")
     try:
         mark_all_span = driver.find_element(By.XPATH, "//span[text()='(All)']")
         driver.execute_script("arguments[0].click();", mark_all_span)
         time.sleep(1)
         driver.execute_script("arguments[0].click();", mark_all_span)
-        ok("Columns cleared")
+        ok("Form criteria mapping filters cleared.")
     except:
-        warn("Could not clear columns – continuing")
+        pass
 
-    required_columns = [
-        "Clinic Name", "Patient Name", "Patient ID",
-        "Treating Therapist", "Appointment Type",
-        "Appointment Date", "Visit Status"
-    ]
+    required_columns = ["Clinic Name", "Patient Name", "Patient ID", "Treating Therapist", "Appointment Type", "Appointment Date", "Visit Status"]
     for col in required_columns:
         try:
-            xpath = f"//span[text()='{col}']/preceding-sibling::input | //label[contains(., '{col}')]//input"
-            cb = driver.find_element(By.XPATH, xpath)
+            cb = driver.find_element(By.XPATH, f"//span[text()='{col}']/preceding-sibling::input | //label[contains(., '{col}')]//input")
             driver.execute_script("arguments[0].click();", cb)
         except:
-            warn(f"Column '{col}' not found – possibly already selected")
+            pass
 
     apply_btn = driver.find_element(By.XPATH, "//button[contains(text(),'Apply')] | //*[@id='lblLayoutOk']")
     driver.execute_script("arguments[0].click();", apply_btn)
     time.sleep(3)
 
-    step("Applying date filter")
     today = datetime.now()
-    end_date = "12/31/2060" 
-
-    if today.weekday() == 0:
-        start_date = (today - timedelta(days=3)).strftime("%m/%d/%Y")
-        log.info(f"Monday logic: Extracting from last Friday ({start_date}) through 2060.")
-    else:
-        start_date = (today - timedelta(days=1)).strftime("%m/%d/%Y")
-        log.info(f"Standard logic: Extracting from yesterday ({start_date}) through 2060.")
+    end_date = "12/31/2060"
+    start_date = (today - timedelta(days=3)).strftime("%m/%d/%Y") if today.weekday() == 0 else (today - timedelta(days=1)).strftime("%m/%d/%Y")
 
     try:
-        driver.execute_script(
-            f"if(document.getElementById('inpDateStart')) document.getElementById('inpDateStart').value = '{start_date}';"
-        )
-        driver.execute_script(
-            f"if(document.getElementById('inpDateEnd')) document.getElementById('inpDateEnd').value = '{end_date}';"
-        )
+        driver.execute_script(f"if(document.getElementById('inpDateStart')) document.getElementById('inpDateStart').value = '{start_date}';")
+        driver.execute_script(f"if(document.getElementById('inpDateEnd')) document.getElementById('inpDateEnd').value = '{end_date}';")
         apply_date = driver.find_element(By.ID, "btnApplyDateFilter")
         driver.execute_script("arguments[0].click();", apply_date)
-        ok(f"Date filter applied: {start_date} to {end_date}")
+        ok(f"Applied date contextual scope filter from {start_date} to {end_date}")
     except:
-        warn("Could not set date filter – manually check the report range")
+        warn("Failed to automatically update target calendar dimensions.")
     time.sleep(5)
 
-    step("Exporting to CSV")
     before_files = set(os.listdir(DOWNLOAD_PATH))
     export_btn = wait.until(EC.element_to_be_clickable((By.ID, "ExportDataBtn")))
     driver.execute_script("arguments[0].click();", export_btn)
-    
     csv_opt = wait.until(EC.element_to_be_clickable((By.XPATH, "//*[text()='CSV']")))
     driver.execute_script("arguments[0].click();", csv_opt)
     
     return wait_for_new_csv(DOWNLOAD_PATH, before_files)
 
 # =====================================================================
-# MAIN
+# USER INTERFACE INTERACTION ROUTER
 # =====================================================================
+with st.form("automation_form"):
+    st.info("System will verify local variables and secrets configurations automatically.")
+    submit = st.form_submit_button("🚀 Run Automation Process Now")
 
-def main():
+if submit:
+    # Set up UI reporting status containers
+    status_box = st.status("Initializing Background Server Tasks...", expanded=True)
+    log_container = status_box.empty()
+    
+    # Intercept system print statements to display them in the user interface container
+    streamlit_handler = StreamlitLogHandler(log_container)
+    sys.stdout = streamlit_handler
+    root_logger = logging.getLogger()
+    stream_handler = logging.StreamHandler(streamlit_handler)
+    root_logger.addHandler(stream_handler)
+    
     driver = None
     try:
         driver = create_driver()
@@ -389,14 +314,30 @@ def main():
         if raw_csv:
             final_csv = process_downloaded_data(raw_csv)
             if final_csv:
-                ok("Process fully completed!")
-        
+                status_box.update(label="🎉 Process Completed Successfully!", state="complete", expanded=False)
+                st.success("The operations pipeline completed cleanly.")
+                
+                # Expose a direct file transmission widget to fetch data down onto your local workspace
+                with open(final_csv, "rb") as file:
+                    st.download_button(
+                        label="📥 Download Cleaned CSV File",
+                        data=file,
+                        file_name=os.path.basename(final_csv),
+                        mime="text/csv"
+                    )
+        else:
+            status_box.update(label="❌ Automation script execution halted.", state="error")
+            st.error("No file was recovered from the pipeline.")
+            
     except Exception as e:
-        fail(f"Script Error: {e}")
-        log.error(traceback.format_exc())
+        status_box.update(label="💥 Runtime Exception Encountered", state="error")
+        st.error(f"Execution Error: {e}")
+        with st.expander("Show Technical Stack Trace"):
+            st.code(traceback.format_exc())
+            
     finally:
+        # Restore normal output channels and kill the driver process cleanly
+        root_logger.removeHandler(stream_handler)
+        sys.stdout = sys.__stdout__
         if driver:
             driver.quit()
-
-if __name__ == "__main__":
-    main()
