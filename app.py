@@ -18,15 +18,20 @@ if user_text:
     st.success("✨ Checkpoint 1 Passed! The server received your text.")
     st.markdown("---")
     
-    # 📥 CHECKPOINT 2: Wait for a dropdown selection and a button click
+    # 📥 CHECKPOINT 2: Wrapped in a form so the ENTER key works!
     st.subheader("Step 2: Choose an Action")
-    st.write("The server is now holding the code execution until you pick an option and hit 'Execute'.")
+    st.write("Pick an option and press **Enter** (or click the button) to execute.")
     
-    action = st.selectbox("What should the server do with your text?", 
-                          ["Count Words", "Convert to UPPERCASE", "Simulate AI Summary"])
-    
-    # The code completely pauses here until this button is clicked
-    if st.button("🚀 Execute Selected Action"):
+    # Creating a form container
+    with st.form(key="action_form"):
+        action = st.selectbox("What should the server do with your text?", 
+                              ["Count Words", "Convert to UPPERCASE", "Simulate AI Summary"])
+        
+        # Every form needs a submit button. Pressing 'Enter' while inside the dropdown triggers this button automatically.
+        submit_button = st.form_submit_button(label="🚀 Execute Selected Action")
+        
+    # The code execution pauses here until the form is submitted (via Enter key or Click)
+    if submit_button:
         st.write("### Output Results:")
         
         # Show a loading spinner to simulate processing time
