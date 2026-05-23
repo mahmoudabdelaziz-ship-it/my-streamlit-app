@@ -60,11 +60,17 @@ def fail(msg: str):
     log.error(f"✖ {msg}")
 
 # =====================================================================
-# SECURE CONFIGURATION & SETTINGS
+# SECURE CONFIGURATION & PATH CORRECTIONS
 # =====================================================================
 WEBPT_URL     = "https://app.webpt.com"
 WAIT_TIMEOUT  = 20
+
+# Safe home directory fallback mapping
 DOWNLOAD_PATH = os.path.join(os.path.expanduser("~"), "Downloads")
+
+# 📂 CRITICAL LINUX FIX: Dynamic directory validation
+if not os.path.exists(DOWNLOAD_PATH):
+    os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 
 try:
     USERNAME       = st.secrets["WEBPT_USERNAME"]
@@ -82,10 +88,6 @@ except Exception as e:
 # NATIVE AUTHENTICATED PROXY EXTENSION GENERATOR
 # =====================================================================
 def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, folder_path="/tmp"):
-    """
-    Generates a dynamic Chrome extension to inject credentials natively.
-    Bypasses the reliance on third-party python proxy handlers like selenium-wire.
-    """
     manifest_json = """
     {
         "version": "1.0.0",
@@ -172,7 +174,6 @@ def create_driver() -> webdriver.Chrome:
     options.add_argument("--disable-notifications")
     options.add_argument("--disable-popup-blocking") 
     
-    # SSL Handshake Bypass Parameters
     options.add_argument("--ignore-certificate-errors")
     options.add_argument("--allow-running-insecure-content")
     
@@ -189,18 +190,18 @@ def create_driver() -> webdriver.Chrome:
         log.info(f"Injecting credential authentication parameters natively into Chrome context...")
         try:
             host, port = PROXY_ENDPOINT.strip().split(":")
-            # Generate the transient helper plugin
             plugin_file = create_proxy_auth_extension(
                 proxy_host=host,
                 proxy_port=port,
                 proxy_user=PROXY_USER.strip(),
                 proxy_pass=PROXY_PASS.strip()
             )
-            options.add_extensions(plugin_file)
+            # Updated to use extension parameter compatibility list wrapper
+            options.add_argument(f'--load-extension={os.path.dirname(plugin_file)}')
         except Exception as proxy_err:
             log.error(f"Failed to load native proxy configuration details: {proxy_err}")
 
-    # Binary location setup for Streamlit Cloud
+    # Binary path evaluation block
     if os.name == 'posix': 
         if os.path.exists("/usr/bin/chromium-browser"):
             options.binary_location = "/usr/bin/chromium-browser"
