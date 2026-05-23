@@ -4,12 +4,13 @@ import os
 import traceback
 import sys
 import io
+import zipfile
 import pandas as pd
 import streamlit as st
 from datetime import datetime, timedelta
 
-# USING SELENIUM-WIRE FOR THE PREMIUM PROXY AUTHENTICATION
-from seleniumwire import webdriver 
+# NATIVE, STABLE SELENIUM IMPORTS
+from selenium import webdriver 
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -34,7 +35,6 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# Custom utility to redirect standard log prints visually onto the web interface
 class StreamlitLogHandler(io.StringIO):
     def __init__(self, placeholder):
         super().__init__()
@@ -66,7 +66,6 @@ WEBPT_URL     = "https://app.webpt.com"
 WAIT_TIMEOUT  = 20
 DOWNLOAD_PATH = os.path.join(os.path.expanduser("~"), "Downloads")
 
-# Load secure credentials from Streamlit Cloud Secrets safely
 try:
     USERNAME       = st.secrets["WEBPT_USERNAME"]
     PASSWORD       = st.secrets["WEBPT_PASSWORD"]
@@ -78,6 +77,65 @@ except Exception as e:
     USERNAME      = "Mahmoudabdelaziz.CC"
     PASSWORD      = "CityPT10$"
     USE_PROXY     = False
+
+# =====================================================================
+# NATIVE AUTHENTICATED PROXY EXTENSION GENERATOR
+# =====================================================================
+def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, folder_path="/tmp"):
+    """
+    Generates a dynamic Chrome extension to inject credentials natively.
+    Bypasses the reliance on third-party python proxy handlers like selenium-wire.
+    """
+    manifest_json = """
+    {
+        "version": "1.0.0",
+        "manifest_version": 3,
+        "name": "Chrome Proxy Auth Extension",
+        "permissions": ["proxy", "tabs", "unlimitedStorage", "storage", "<all_urls>", "webRequest", "webRequestAuthProvider"],
+        "background": {
+            "service_worker": "background.js"
+        }
+    }
+    """
+
+    background_js = f"""
+    var config = {{
+        mode: "fixed_servers",
+        rules: {{
+            singleProxy: {{
+                scheme: "http",
+                host: "{proxy_host}",
+                port: parseInt({proxy_port})
+            }},
+            bypassList: []
+        }}
+    }};
+
+    chrome.proxy.settings.set({{value: config, scope: "regular"}}, function({{}});
+
+    chrome.webRequest.onAuthRequired.addListener(
+        function(details) {{
+            return {{
+                authCredentials: {{
+                    username: "{proxy_user}",
+                    password: "{proxy_pass}"
+                }}
+            }};
+        }},
+        {{urls: ["<all_urls>"]}},
+        ["blocking"]
+    );
+    """
+    
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
+        
+    plugin_path = os.path.join(folder_path, f"proxy_auth_plugin.zip")
+    with zipfile.ZipFile(plugin_path, 'w') as zp:
+        zp.writestr("manifest.json", manifest_json)
+        zp.writestr("background.js", background_js)
+        
+    return plugin_path
 
 # =====================================================================
 # CORE AUTOMATION LOGIC
@@ -104,7 +162,7 @@ def process_downloaded_data(csv_path):
         return None
 
 def create_driver() -> webdriver.Chrome:
-    step("Launching Headless Chrome browser via Authenticated Premium Proxy")
+    step("Launching Native Headless Chrome via Secure Extension Routing")
     options = webdriver.ChromeOptions()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
@@ -114,10 +172,9 @@ def create_driver() -> webdriver.Chrome:
     options.add_argument("--disable-notifications")
     options.add_argument("--disable-popup-blocking") 
     
-    # 🔒 SSL Bypass Arguments to prevent ERR_CONNECTION_CLOSED
+    # SSL Handshake Bypass Parameters
     options.add_argument("--ignore-certificate-errors")
     options.add_argument("--allow-running-insecure-content")
-    options.add_argument("--disable-ssl-by-default")
     
     prefs = {
         "download.default_directory": DOWNLOAD_PATH,
@@ -128,39 +185,30 @@ def create_driver() -> webdriver.Chrome:
     }
     options.add_experimental_option("prefs", prefs)
     
-    wire_options = {}
     if USE_PROXY:
-        log.info(f"Setting up secure connection tunnel via premium proxy node...")
-        
-        # Clean up endpoints to make sure no accidental whitespaces exist
-        u = PROXY_USER.strip()
-        p = PROXY_PASS.strip()
-        e = PROXY_ENDPOINT.strip()
-        
-        # Ensure standard http:// formatting for the selenium-wire proxy middleware mapping
-        proxy_url = f"http://{u}:{p}@{e}"
-        
-        wire_options = {
-            'proxy': {
-                'http': proxy_url,
-                'https': proxy_url,
-                'no_proxy': 'localhost,127.0.0.1'
-            },
-            'verify_ssl': False  # Disables strict SSL checking on the proxy wrapper level
-        }
+        log.info(f"Injecting credential authentication parameters natively into Chrome context...")
+        try:
+            host, port = PROXY_ENDPOINT.strip().split(":")
+            # Generate the transient helper plugin
+            plugin_file = create_proxy_auth_extension(
+                proxy_host=host,
+                proxy_port=port,
+                proxy_user=PROXY_USER.strip(),
+                proxy_pass=PROXY_PASS.strip()
+            )
+            options.add_extensions(plugin_file)
+        except Exception as proxy_err:
+            log.error(f"Failed to load native proxy configuration details: {proxy_err}")
 
-    # Smart Linux Environment Path Detection
+    # Binary location setup for Streamlit Cloud
     if os.name == 'posix': 
         if os.path.exists("/usr/bin/chromium-browser"):
             options.binary_location = "/usr/bin/chromium-browser"
         elif os.path.exists("/usr/bin/chromium"):
             options.binary_location = "/usr/bin/chromium"
-        else:
-            log.warning("⚠️ Chromium path not explicitly found in standard /usr/bin/ directory.")
-            
-        driver = webdriver.Chrome(options=options, seleniumwire_options=wire_options)
+        driver = webdriver.Chrome(options=options)
     else:
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options, seleniumwire_options=wire_options)
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
         
     ny_coordinates = {"latitude": 40.7128, "longitude": -74.0060, "accuracy": 100}
     driver.execute_cdp_cmd("Emulation.setGeolocationOverride", ny_coordinates)
@@ -312,11 +360,9 @@ with st.form("automation_form"):
     submit = st.form_submit_button("🚀 Run Automation Process Now")
 
 if submit:
-    # Set up UI reporting status containers
     status_box = st.status("Initializing Background Server Tasks...", expanded=True)
     log_container = status_box.empty()
     
-    # Intercept system print statements to display them in the user interface container
     streamlit_handler = StreamlitLogHandler(log_container)
     sys.stdout = streamlit_handler
     root_logger = logging.getLogger()
@@ -338,7 +384,6 @@ if submit:
                 status_box.update(label="🎉 Process Completed Successfully!", state="complete", expanded=False)
                 st.success("The operations pipeline completed cleanly.")
                 
-                # Expose a direct file transmission widget to fetch data down onto your local workspace
                 with open(final_csv, "rb") as file:
                     st.download_button(
                         label="📥 Download Cleaned CSV File",
@@ -357,7 +402,6 @@ if submit:
             st.code(traceback.format_exc())
             
     finally:
-        # Restore normal output channels and kill the driver process cleanly
         root_logger.removeHandler(stream_handler)
         sys.stdout = sys.__stdout__
         if driver:
