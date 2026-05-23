@@ -1,7 +1,4 @@
 streamlit
 pandas
 selenium
-selenium-wire
 webdriver-manager
-blinker==1.7.0
-setuptools==70.0.0
