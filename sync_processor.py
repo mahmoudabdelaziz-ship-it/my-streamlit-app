@@ -3,8 +3,8 @@ import time
 import logging
 import requests
 import pandas as pd
-from datetime import datetime, timedelta
 import streamlit as st
+from datetime import datetime, timedelta
 
 log = logging.getLogger(__name__)
 
@@ -13,7 +13,9 @@ def ok(msg: str): log.info(f"✔ {msg}")
 def warn(msg: str): log.warning(f"⚠ {msg}")
 def fail(msg: str): log.error(f"✖ {msg}")
 
-# Telegram Configuration
+# =====================================================================
+# SECURE TELEGRAM CONFIGURATION
+# =====================================================================
 TELEGRAM_TOKEN = st.secrets["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
 
@@ -26,7 +28,6 @@ def send_telegram_alert(message):
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code == 200:
             ok("Telegram notification dispatched successfully.")
-            # If Telegram provides a message date, use it, otherwise use local script time
             res_json = response.json()
             if "result" in res_json and "date" in res_json["result"]:
                 return res_json["result"]["date"]
@@ -80,17 +81,15 @@ def parse_sheet_date(date_str):
             pass
     return None
 
-    def sync_data_to_google_sheets(csv_path):
+def sync_data_to_google_sheets(csv_path):
     step("Connecting to Google Sheets API via Decoupled Sync Processor")
     try:
         import gspread
         from google.oauth2.service_account import Credentials
-        import streamlit as st
     except ImportError:
         fail("Required Google Sheets libraries not installed. Please install gspread and google-auth.")
         return False
 
-    # ❌ REMOVED: Old local hardcoded path variables
     MAIN_SHEET_ID = "1VVM9vExR_4xUN0dp25IF7PiKlTqKTEj-EZ8IwqYn5RA"
     AGENT_SHEET_ID = "1LgPyUHsxZMioLIOgNRk2IgQOEEU70cHA45fUtoCed6c"
 
@@ -101,48 +100,6 @@ def parse_sheet_date(date_str):
         ]
         google_creds_dict = st.secrets["gcp_service_account"]
         creds = Credentials.from_service_account_info(google_creds_dict, scopes=scopes)
-        client = gspread.authorize(creds)
-        ok("Authenticated successfully with Google service account")
-    except Exception as e:
-        fail(f"Failed to authenticate with Google: {e}")
-        return False
-
-    # ❌ REMOVED THE CRASHING BLOCK HERE:
-    # (The old code checked if os.path.exists(CREDENTIALS_PATH) here and crashed)
-
-    # 1. Load data from AuthSheet2026 (Main Sheet)
-    step("Reading AuthSheet2026 data from Main Sheet")
-    try:
-        main_ss = client.open_by_key(MAIN_SHEET_ID)
-        auth_ws = main_ss.worksheet("AuthSheet2026")
-        main_rows = auth_ws.get_all_values()
-        
-        # ... Rest of your sync_processor.py code continues exactly as before ...
-        # 🔥 FIX: Load credentials directly from Streamlit secure secrets dictionary
-        google_creds_dict = st.secrets["gcp_service_account"]
-        creds = Credentials.from_service_account_info(google_creds_dict, scopes=scopes)
-        
-        client = gspread.authorize(creds)
-        ok("Authenticated successfully with Google service account")
-    except Exception as e:
-        fail(f"Failed to authenticate with Google: {e}")
-        return False
-
-    MAIN_SHEET_ID = "1VVM9vExR_4xUN0dp25IF7PiKlTqKTEj-EZ8IwqYn5RA"
-    AGENT_SHEET_ID = "1LgPyUHsxZMioLIOgNRk2IgQOEEU70cHA45fUtoCed6c"
-    
-    # ... The rest of your sync_processor.py code continues exactly as before ...
-    
-    if not os.path.exists(CREDENTIALS_PATH):
-        fail(f"Google credentials file not found at: {CREDENTIALS_PATH}")
-        return False
-
-    try:
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
-        creds = Credentials.from_service_account_file(CREDENTIALS_PATH, scopes=scopes)
         client = gspread.authorize(creds)
         ok("Authenticated successfully with Google service account")
     except Exception as e:
@@ -293,7 +250,6 @@ def parse_sheet_date(date_str):
             f"Please reply with active agent names separated by commas.\n"
             f"Example: `John, Mah, Alex`"
         )
-        # 🔥 CRITICAL FIX: Send alert and record the exact timestamp it arrived in Telegram
         notification_timestamp = send_telegram_alert(alert_msg)
         
         step("Awaiting a BRAND NEW Agent assignment list from Telegram...")
@@ -315,15 +271,12 @@ def parse_sheet_date(date_str):
                         if "message" in update and str(update["message"]["chat"]["id"]) == str(TELEGRAM_CHAT_ID):
                             msg_date = update["message"].get("date", 0)
                             
-                            # 🔥 STRICTOR TIME-GATE WALL:
-                            # Only accept the message if its timestamp is strictly greater than our notification timestamp!
                             if msg_date > notification_timestamp:
                                 text_reply = update["message"].get("text", "")
                                 if text_reply:
                                     assigned_agents = [name.strip() for name in text_reply.split(",") if name.strip()]
                                     break
                             else:
-                                # Skips old messages found in history log
                                 continue
                     if assigned_agents:
                         break
