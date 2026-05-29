@@ -91,8 +91,8 @@ def process_downloaded_data(csv_path):
         # Load data using 'utf-8-sig' encoding to automatically catch hidden BOM marks if present
         df = pd.read_csv(csv_path, encoding='utf-8-sig')
         
-        # Lowercase and clean column text for uniform comparison
-        raw_cols = [str(c).strip().lower() for c in df.columns]
+        # Log parsed columns for visibility during errors
+        print(f"📋 Raw CSV Columns Extracted: {list(df.columns)}")
         
         rename_dict = {}
         # Robust Substring Search Matching Loop
@@ -101,11 +101,13 @@ def process_downloaded_data(csv_path):
             
             if "clinic" in cleaned and "name" in cleaned:
                 rename_dict[original_col] = "Clinic Name"
-            elif "patient" in cleaned and "name" in cleaned:
+            # Flexible condition matching for variations like 'Patient Name', 'Pt Name', or just 'Patient'
+            elif ("patient" in cleaned and "name" in cleaned) or ("pt" in cleaned and "name" in cleaned) or (cleaned == "patient"):
                 rename_dict[original_col] = "Patient Name"
-            elif "patient" in cleaned and "id" in cleaned:
+            # Flexible condition matching for variations like 'Patient ID', 'Pt ID', 'MRN', 'Account', or 'EMR'
+            elif "patient" in cleaned and ("id" in cleaned or "mrn" in cleaned or "account" in cleaned or "emr" in cleaned) or (cleaned == "patient id" or cleaned == "pt id"):
                 rename_dict[original_col] = "Patient ID"
-            elif "therapist" in cleaned:
+            elif "therapist" in cleaned or "provider" in cleaned:
                 rename_dict[original_col] = "Treating Therapist"
             elif "type" in cleaned:
                 rename_dict[original_col] = "Appointment Type"
@@ -121,7 +123,7 @@ def process_downloaded_data(csv_path):
         target_columns = ["Patient ID", "Patient Name", "Clinic Name", "Treating Therapist", "Appointment Type", "Appointment Date", "Visit Status"]
         for col in target_columns:
             if col not in df.columns:
-                raise KeyError(f"Critical index column '{col}' could not be resolved from CSV source.")
+                raise KeyError(f"Critical index column '{col}' could not be resolved from CSV source. Available renamed columns: {list(df.columns)}")
                 
         # Re-index to keep only required features
         df = df[target_columns]
