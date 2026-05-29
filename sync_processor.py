@@ -13,75 +13,45 @@ def ok(msg: str): log.info(f"✔ {msg}")
 def warn(msg: str): log.warning(f"⚠ {msg}")
 def fail(msg: str): log.error(f"✖ {msg}")
 
-# =====================================================================
-# SECURE TELEGRAM CONFIGURATION
-# =====================================================================
 TELEGRAM_TOKEN = st.secrets["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
 
 def send_telegram_alert(message):
-    """Dispatches an alert and returns the current epoch time of transmission."""
+    """Dispatches pipeline status alerts to Telegram."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
-    sent_time = time.time() # Capture precise time local script sent it
     try:
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code == 200:
             ok("Telegram notification dispatched successfully.")
-            res_json = response.json()
-            if "result" in res_json and "date" in res_json["result"]:
-                return res_json["result"]["date"]
-            return sent_time
         else:
             warn(f"Telegram returned status code: {response.status_code}")
     except Exception as e:
         fail(f"Failed to transmit Telegram webhook: {e}")
-    return sent_time
 
-def fuzzy_match_agent(input_name, valid_dropdown_names):
-    """Upgraded matching engine: checks for partial string matches first, then fuzzy."""
-    from difflib import SequenceMatcher, get_close_matches
-    
-    cleaned_input = input_name.strip().lower()
-    if not cleaned_input:
-        return input_name
-
-    best_partial_match = None
-    highest_ratio = 0.0
-    
-    for valid_name in valid_dropdown_names:
-        cleaned_valid = valid_name.strip().lower()
-        matcher = SequenceMatcher(None, cleaned_input, cleaned_valid)
-        match_ratio = matcher.real_quick_ratio()
+def get_valid_agents():
+    """Fetches the unique historic agent options from the Google Sheet to populate the UI dropdown."""
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
         
-        if cleaned_input in cleaned_valid:
-            highest_ratio = 1.0
-            best_partial_match = valid_name
-            break
-        elif match_ratio > highest_ratio:
-            if match_ratio > 0.6:
-                highest_ratio = match_ratio
-                best_partial_match = valid_name
-
-    if best_partial_match and highest_ratio >= 0.6:
-        return best_partial_match
-
-    matches = get_close_matches(input_name.strip(), valid_dropdown_names, n=1, cutoff=0.5)
-    if matches:
-        return matches[0]
+        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scopes)
+        client = gspread.authorize(creds)
         
-    return input_name
+        agent_ss = client.open_by_key("1LgPyUHsxZMioLIOgNRk2IgQOEEU70cHA45fUtoCed6c")
+        approval_ws = agent_ss.worksheet("Approval")
+        existing_rows = approval_ws.get_all_values()
+        
+        if len(existing_rows) > 1:
+            agents = list(set([r[7].strip() for r in existing_rows[1:] if len(r) > 7 and r[7].strip()]))
+            return sorted(agents)
+    except Exception as e:
+        pass
+    # Fallback default pool if sheet connection is slow or unpopulated
+    return ["Mazen", "Mohamed Elgendi", "Nada", "Mohamed Elsherif", "Omar Abdelaziz", "Rana", "Youssef", "Mostafa Kamal", "Philo"]
 
-def parse_sheet_date(date_str):
-    cleaned_str = str(date_str).strip()
-    for fmt in ('%m/%d/%Y', '%m-%d-%Y', '%Y-%m-%d'):
-        try:
-            return datetime.strptime(cleaned_str, fmt)
-        except ValueError:
-            pass
-    return None
-
-def sync_data_to_google_sheets(csv_path):
+def sync_data_to_google_sheets(csv_path, selected_agents=None):
     step("Connecting to Google Sheets API via Decoupled Sync Processor")
     try:
         import gspread
@@ -94,12 +64,8 @@ def sync_data_to_google_sheets(csv_path):
     AGENT_SHEET_ID = "1LgPyUHsxZMioLIOgNRk2IgQOEEU70cHA45fUtoCed6c"
 
     try:
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
-        google_creds_dict = st.secrets["gcp_service_account"]
-        creds = Credentials.from_service_account_info(google_creds_dict, scopes=scopes)
+        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scopes)
         client = gspread.authorize(creds)
         ok("Authenticated successfully with Google service account")
     except Exception as e:
@@ -124,10 +90,10 @@ def sync_data_to_google_sheets(csv_path):
 
     excluded_clinics = {'Home Care', 'Sensory Freeway', 'PTOC - Telehealth', '[PTOC - Telehealth]'}
 
-    # 2. Filter Main Sheet by Yesterday's date (Col F) & Statuses (Col D)
+    # 2. Filter Main Sheet by Yesterday's date & Statuses
     yesterday_date = (datetime.now() - timedelta(days=1)).date()
     target_date_str = yesterday_date.strftime("%m/%d/%Y") 
-    step(f"Filtering Main Sheet rows for Yesterday ({target_date_str}) & Status = 'Approved' OR 'Not Required'")
+    step(f"Filtering Main Sheet rows for Yesterday ({target_date_str})")
     
     matched_main_rows = []
     for row in main_data_rows:
@@ -141,18 +107,25 @@ def sync_data_to_google_sheets(csv_path):
         if clinic_name in excluded_clinics:
             continue
             
-        parsed_date = parse_sheet_date(date_str)
+        cleaned_str = str(date_str).strip()
+        parsed_date = None
+        for fmt in ('%m/%d/%Y', '%m-%d-%Y', '%Y-%m-%d'):
+            try:
+                parsed_date = datetime.strptime(cleaned_str, fmt)
+                break
+            except ValueError:
+                pass
         
         if parsed_date and parsed_date.date() == yesterday_date:
             if status_val.lower() in ["approved", "not required", "approved - not required"]:
                 matched_main_rows.append(row)
                 
-    ok(f"Found {len(matched_main_rows)} matching target rows from yesterday ({target_date_str}).")
+    ok(f"Found {len(matched_main_rows)} matching target rows from yesterday.")
     if not matched_main_rows:
         warn("No rows matched criteria. Ending Sync Process smoothly.")
         return True
 
-    # 3. Read and process WebPT report data (Filter Today onwards)
+    # 3. Read and process WebPT report data
     step("Reading and filtering WebPT report data")
     try:
         report_df = pd.read_csv(csv_path, encoding='utf-8')
@@ -169,7 +142,6 @@ def sync_data_to_google_sheets(csv_path):
         filtered_report_df = report_df[report_df["Parsed Date"].dt.date >= today_date]
         ok(f"Filtered report for today onwards. Retained {len(filtered_report_df)} active appointments.")
     else:
-        warn("Appointment Date column missing from report. Proceeding without date filter.")
         filtered_report_df = report_df
 
     # 4. Cross-match Patient ID and check upcoming statuses
@@ -202,17 +174,7 @@ def sync_data_to_google_sheets(csv_path):
                 has_upcoming = True
                 break
         
-        new_row = [
-            clinic,       # Column A
-            emr_id,       # Column B
-            patient_name, # Column C
-            update_date,  # Column D
-            "",           # Column E
-            "",           # Column F
-            "",           # Column G
-            "",           # Column H
-            today_stamp   # Column I
-        ]
+        new_row = [clinic, emr_id, patient_name, update_date, "", "", "", "", today_stamp]
         
         if has_upcoming:
             new_row[4] = "Already Scheduled"
@@ -242,75 +204,23 @@ def sync_data_to_google_sheets(csv_path):
     
     total_working_count = len(final_no_upcoming)
     
-    # 6. Fetch Telemetry Parameters via Telegram Intercept
-    if total_working_count > 0:
-        alert_msg = (
-            f"🔔 *WebPT Automation Notice*\n\n"
-            f"Pipeline has discovered *{total_working_count}* unique blank target rows needing assignment.\n"
-            f"Please reply with active agent names separated by commas.\n"
-            f"Example: `John, Mah, Alex`"
-        )
-        notification_timestamp = send_telegram_alert(alert_msg)
+    # 6. Process Workload Split from UI parameters
+    if total_working_count > 0 and selected_agents:
+        ok(f"Distributing tasks among selected agents: {selected_agents}")
+        num_agents = len(selected_agents)
+        base_share = total_working_count // num_agents
+        remainder = total_working_count % num_agents
         
-        step("Awaiting a BRAND NEW Agent assignment list from Telegram...")
-        assigned_agents = []
-        offset = None
-        timeout_limit = time.time() + 300 # 5-minute timeout window
-        poll_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-        
-        while time.time() < timeout_limit:
-            params = {"timeout": 20, "allowed_updates": ["message"]}
-            if offset:
-                params["offset"] = offset
-                
-            try:
-                updates_resp = requests.get(poll_url, params=params, timeout=30).json()
-                if "result" in updates_resp and updates_resp["result"]:
-                    for update in updates_resp["result"]:
-                        offset = update["update_id"] + 1
-                        if "message" in update and str(update["message"]["chat"]["id"]) == str(TELEGRAM_CHAT_ID):
-                            msg_date = update["message"].get("date", 0)
-                            
-                            if msg_date > notification_timestamp:
-                                text_reply = update["message"].get("text", "")
-                                if text_reply:
-                                    assigned_agents = [name.strip() for name in text_reply.split(",") if name.strip()]
-                                    break
-                            else:
-                                continue
-                    if assigned_agents:
-                        break
-            except Exception as err:
-                warn(f"Polling warning encountered: {err}")
-            time.sleep(2)
-            
-        if assigned_agents:
-            ok(f"Received agent parameters from Telegram: {assigned_agents}")
-            
-            try:
-                valid_dropdown_options = list(set([r[7].strip() for r in existing_rows[1:] if len(r) > 7 and r[7].strip()]))
-                if not valid_dropdown_options:
-                    valid_dropdown_options = assigned_agents 
-            except:
-                valid_dropdown_options = assigned_agents
-                
-            cleaned_agents = [fuzzy_match_agent(name, valid_dropdown_options) for name in assigned_agents]
-            ok(f"Fuzzy matching conversion engine finalized names: {cleaned_agents}")
-            
-            num_agents = len(cleaned_agents)
-            base_share = total_working_count // num_agents
-            remainder = total_working_count % num_agents
-            
-            current_idx = 0
-            for i, agent in enumerate(cleaned_agents):
-                share_allocation = base_share + (remainder if i == num_agents - 1 else 0)
-                for _ in range(share_allocation):
-                    if current_idx < len(final_no_upcoming):
-                        final_no_upcoming[current_idx][7] = agent 
-                        current_idx += 1
-            ok("Workload distribution split cleanly across designated team members.")
-        else:
-            warn("Telegram response timed out or was invalid. Appending rows with blank agent fields.")
+        current_idx = 0
+        for i, agent in enumerate(selected_agents):
+            share_allocation = base_share + (remainder if i == num_agents - 1 else 0)
+            for _ in range(share_allocation):
+                if current_idx < len(final_no_upcoming):
+                    final_no_upcoming[current_idx][7] = agent 
+                    current_idx += 1
+        ok("Workload distribution split cleanly across designated team members.")
+    elif total_working_count > 0:
+        warn("No active agents selected in UI form. Leaving agent fields blank.")
             
     rows_to_append = final_upcoming + final_no_upcoming
     
@@ -321,7 +231,8 @@ def sync_data_to_google_sheets(csv_path):
             ok("Google Sheets append pipeline ran successfully.")
             
             completion_summary = (
-                f"✅ *Sync Pipeline Complete!*\n\n"
+                f"🔔 *WebPT Automation Notice*\n\n"
+                f"Pipeline has completed processing entries!\n"
                 f"• Already Scheduled Rows: {len(final_upcoming)}\n"
                 f"• Assigned Agent Working Rows: {len(final_no_upcoming)}\n"
                 f"• Today's Stamp Added to Column I."
