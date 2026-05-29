@@ -1,361 +1,228 @@
-import time
-import logging
 import os
-import traceback
-import sys
-import io
-import zipfile
-import re
+import time  
+import logging
+import requests
 import pandas as pd
 import streamlit as st
 from datetime import datetime, timedelta
 
-from selenium import webdriver 
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
-
-import sync_processor
-
-# =====================================================================
-# STREAMLIT PAGE SETUP
-# =====================================================================
-st.set_page_config(page_title="WebPT Automation Tool", page_icon="🤖", layout="centered")
-
-st.title("🤖 WebPT Automated Report Downloader & Assigner")
-st.write("Configure active agents and click run to execute the automated task pipeline.")
-
-# =====================================================================
-# LOGGING CONFIGURATION
-# =====================================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()]
-)
 log = logging.getLogger(__name__)
 
-class StreamlitLogHandler(io.StringIO):
-    def __init__(self, placeholder):
-        super().__init__()
-        self.placeholder = placeholder
-        self.log_text = ""
+def step(msg: str): log.info(f"▶ {msg}")
+def ok(msg: str): log.info(f"✔ {msg}")
+def warn(msg: str): log.warning(f"⚠ {msg}")
+def fail(msg: str): log.error(f"✖ {msg}")
 
-    def write(self, msg):
-        if msg.strip():
-            self.log_text += msg + "\n"
-            self.placeholder.code(self.log_text)
-        return len(msg)
+TELEGRAM_TOKEN = st.secrets["TELEGRAM_TOKEN"]
+TELEGRAM_CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
 
-# =====================================================================
-# SECURE CONFIGURATION & PATH CORRECTIONS
-# =====================================================================
-WEBPT_URL     = "https://app.webpt.com"
-WAIT_TIMEOUT  = 20
-DOWNLOAD_PATH = os.path.join(os.path.expanduser("~"), "Downloads")
+MAIN_SHEET_ID = "1VVM9vExR_4xUN0dp25IF7PiKlTqKTEj-EZ8IwqYn5RA"
+AGENT_SHEET_ID = "1LgPyUHsxZMioLIOgNRk2IgQOEEU70cHA45fUtoCed6c"
+EXCLUDED_CLINICS = {'Home Care', 'Sensory Freeway', 'PTOC - Telehealth', '[PTOC - Telehealth]'}
 
-if not os.path.exists(DOWNLOAD_PATH):
-    os.makedirs(DOWNLOAD_PATH, exist_ok=True)
-
-try:
-    USERNAME       = st.secrets["WEBPT_USERNAME"]
-    PASSWORD       = st.secrets["WEBPT_PASSWORD"]
-    PROXY_USER     = st.secrets["PROXY_USER"]
-    PROXY_PASS     = st.secrets["PROXY_PASS"]
-    PROXY_ENDPOINT = st.secrets["PROXY_ENDPOINT"]
-    USE_PROXY      = True
-except Exception as e:
-    USERNAME      = "Mahmoudabdelaziz.CC"
-    PASSWORD      = "CityPT10$"
-    USE_PROXY     = False
-
-# =====================================================================
-# UTILITY AND SELENIUM PIPELINE FUNCTIONS
-# =====================================================================
-def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, folder_path="/tmp"):
-    manifest_json = '{"version": "1.0.0", "manifest_version": 3, "name": "Chrome Proxy Auth Extension", "permissions": ["proxy", "tabs", "unlimitedStorage", "storage", "<all_urls>", "webRequest", "webRequestAuthProvider"], "background": { "service_worker": "background.js" }}'
-    background_js = f'var config = {{ mode: "fixed_servers", rules: {{ singleProxy: {{ scheme: "http", host: "{proxy_host}", port: parseInt({proxy_port}) }}, bypassList: [] }} }}; chrome.proxy.settings.set({{value: config, scope: "regular"}}, function({{}}); chrome.webRequest.onAuthRequired.addListener(function(details) {{ return {{ authCredentials: {{ username: "{proxy_user}", password: "{proxy_pass}" }} }}; }}, {{urls: ["<all_urls>"]}}, ["blocking"]);'
-    if not os.path.exists(folder_path): 
-        os.makedirs(folder_path)
-    plugin_path = os.path.join(folder_path, "proxy_auth_plugin.zip")
-    with zipfile.ZipFile(plugin_path, 'w') as zp:
-        zp.writestr("manifest.json", manifest_json)
-        zp.writestr("background.js", background_js)
-    return plugin_path
-
-def process_downloaded_data(csv_path):
-    print("🧹 Cleaning and parsing WebPT CSV structures...")
+def send_telegram_alert(message):
+    """Dispatches pipeline status alerts to Telegram."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
-        df = pd.read_csv(csv_path, encoding='utf-8')
-        
-        # 🌟 BULLETPROOF NORMALIZATION: Strip columns down to lowercase alphabetic strings only
-        raw_to_alpha = {c: re.sub(r'[^a-z]', '', str(c).lower()) for c in df.columns}
-        
-        # Map alpha strings directly to required standard structures
-        column_mapping = {
-            "clinicname": "Clinic Name",
-            "patientname": "Patient Name",
-            "patientid": "Patient ID",
-            "patientid": "Patient ID",  # Handles edge-case punctuation variations like Patient I'D
-            "treatingtherapist": "Treating Therapist",
-            "appointmenttype": "Appointment Type",
-            "appttype": "Appointment Type",
-            "appointmentdate": "Appointment Date",
-            "apptdate": "Appointment Date",
-            "visitstatus": "Visit Status",
-            "status": "Visit Status"
-        }
-        
-        rename_dict = {}
-        for raw_col, alpha_col in raw_to_alpha.items():
-            if alpha_col in column_mapping:
-                rename_dict[raw_col] = column_mapping[alpha_col]
-        
-        # Apply normalization rename transformations
-        df = df.rename(columns=rename_dict)
-        
-        # Validate that all required structural indices are cleanly present
-        target_columns = ["Patient ID", "Patient Name", "Clinic Name", "Treating Therapist", "Appointment Type", "Appointment Date", "Visit Status"]
-        for col in target_columns:
-            if col not in df.columns:
-                raise KeyError(f"Critical index column '{col}' could not be resolved from CSV source.")
-                
-        # Retain and rearrange target columns
-        df = df[target_columns]
-        
-        # Vectorized string sanitization instead of cell-by-cell loops
-        for col in df.select_dtypes(include=['object']).columns:
-            df[col] = df[col].astype(str).str.replace('\u201a', ',', regex=False).str.replace('â€š', ',', regex=False).str.strip()
-            
-        excluded_clinics = {'Home Care', 'Sensory Freeway', 'PTOC - Telehealth', '[PTOC - Telehealth]'}
-        df = df[~df["Clinic Name"].isin(excluded_clinics)]
-        
-        df["Appointment Date"] = pd.to_datetime(df["Appointment Date"], errors="coerce")
-        df = df.sort_values(by=["Visit Status", "Appointment Date", "Clinic Name"], ascending=[True, True, True])
-        df["Appointment Date"] = df["Appointment Date"].dt.strftime("%Y-%m-%d")
-        
-        df.to_csv(csv_path, index=False, encoding='utf-8')
-        print("✨ CSV data structures cleaned successfully!")
-        return csv_path
-    except Exception as e: 
-        print(f"❌ Failed to parse data rows: {e}")
-        return None
-
-def create_driver() -> webdriver.Chrome:
-    options = webdriver.ChromeOptions()
-    options.add_argument("--headless=new")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--start-maximized")
-    options.add_argument("--disable-notifications")
-    options.add_argument("--disable-popup-blocking") 
-    options.add_argument("--ignore-certificate-errors")
-    
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option('useAutomationExtension', False)
-    
-    prefs = {
-        "download.default_directory": DOWNLOAD_PATH,
-        "download.prompt_for_download": False,
-        "download.directory_upgrade": True,
-        "safebrowsing.enabled": False
-    }
-    options.add_experimental_option("prefs", prefs)
-    
-    if USE_PROXY:
-        try:
-            host, port = PROXY_ENDPOINT.strip().split(":")
-            plugin_file = create_proxy_auth_extension(host, port, PROXY_USER.strip(), PROXY_PASS.strip())
-            options.add_argument(f'--load-extension={os.path.dirname(plugin_file)}')
-        except: 
-            pass
-            
-    if os.name == 'posix':
-        if os.path.exists("/usr/bin/chromium-browser"): 
-            options.binary_location = "/usr/bin/chromium-browser"
-        elif os.path.exists("/usr/bin/chromium"): 
-            options.binary_location = "/usr/bin/chromium"
-        driver = webdriver.Chrome(options=options)
-    else:
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-    
-    driver.execute_cdp_cmd("Page.setDownloadBehavior", {
-        "behavior": "allow",
-        "downloadPath": DOWNLOAD_PATH
-    })
-    
-    return driver
-
-def wait_for_new_csv(download_dir, before_files, timeout=60):
-    print("⏳ Watching target folder for incoming WebPT report...")
-    end_time = time.time() + timeout
-    while time.time() < end_time:
-        current_files = set(os.listdir(download_dir))
-        new_files = current_files - before_files
-        new_csvs = [f for f in new_files if f.endswith('.csv')]
-        active_downloads = [f for f in new_files if f.endswith('.crdownload') or f.endswith('.tmp')]
-        
-        if new_csvs and not active_downloads: 
-            target_file = os.path.join(download_dir, new_csvs[0])
-            print(f"📥 File captured successfully: {new_csvs[0]}")
-            return target_file
-            
-        time.sleep(1.5)
-    raise TimeoutError(f"WebPT initiated export, but no file arrived in {timeout} seconds.")
-
-def login(driver, wait):
-    print("🚀 Navigating to WebPT Login Page...")
-    driver.get(WEBPT_URL)
-    print("✍️ Entering Credentials...")
-    wait.until(EC.presence_of_element_located((By.ID, "username"))).send_keys(USERNAME)
-    driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
-    wait.until(EC.presence_of_element_located((By.ID, "password"))).send_keys(PASSWORD)
-    driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
-    time.sleep(4)
-    try: 
-        driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//button[contains(text(), 'Yes, oust them!')]"))
-        print("💥 Displaced another active session token successfully.")
-    except: 
-        pass
-    wait.until(EC.presence_of_element_located((By.LINK_TEXT, "Advanced Search")))
-    print("🔓 Logged in successfully!")
-
-def open_analytics(driver, wait):
-    print("📊 Accessing WebPT Analytics Engine Hub...")
-    main_window = driver.current_window_handle
-    driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".analytics-icon"))))
-    
-    window_wait_timeout = time.time() + 15
-    while len(driver.window_handles) == 1:
-        if time.time() > window_wait_timeout:
-            raise TimeoutError("WebPT Analytics multi-window execution target took too long to load.")
-        time.sleep(0.5)
-        
-    driver.switch_to.window([w for w in driver.window_handles if w != main_window][0])
-    WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-    print("🎯 Successfully focused Analytics tab frame.")
-
-def navigate_scheduled_visits(driver, wait):
-    print("📂 Expanding Reports UI layout...")
-    WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.XPATH, "//div[@id='REPORTS'] | //div[text()='REPORTS']"))).click()
-    time.sleep(1)
-    sv = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.XPATH, "//div[@id='scheduled_visits']")))
-    driver.execute_script("arguments[0].click();", sv)
-    
-    print("⚙️ Adjusting data column overlays...")
-    options_btn = WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.ID, "OptionsBtn")))
-    driver.execute_script("arguments[0].click();", options_btn)
-    time.sleep(1)
-    
-    required_columns = ["Clinic Name", "Patient Name", "Patient ID", "Treating Therapist", "Appointment Type", "Appointment Date", "Visit Status"]
-    for col in required_columns:
-        try: 
-            driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, f"//span[text()='{col}']/preceding-sibling::input"))
-        except: 
-            pass
-            
-    print("💾 Confirming changes...")
-    apply_btn = driver.find_element(By.XPATH, "//button[contains(text(),'Apply')] | //*[@id='lblLayoutOk']")
-    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", apply_btn)
-    time.sleep(0.5)
-    driver.execute_script("arguments[0].click();", apply_btn)
-    time.sleep(2)
-    
-    print("📅 Applying date range filters...")
-    start_date = (datetime.now() - timedelta(days=3 if datetime.now().weekday() == 0 else 1)).strftime("%m/%d/%Y")
-    try:
-        driver.execute_script(f"if(document.getElementById('inpDateStart')) document.getElementById('inpDateStart').value = '{start_date}';")
-        driver.execute_script("if(document.getElementById('inpDateEnd')) document.getElementById('inpDateEnd').value = '12/31/2060';")
-        driver.find_element(By.ID, "btnApplyDateFilter").click()
-    except: 
-        pass
-    time.sleep(4)
-    
-    print("📥 Triggering report download click...")
-    before_files = set(os.listdir(DOWNLOAD_PATH))
-    driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.ID, "ExportDataBtn"))))
-    driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.XPATH, "//*[text()='CSV']"))))
-    
-    return wait_for_new_csv(DOWNLOAD_PATH, before_files)
-
-
-# =====================================================================
-# STREAMLIT USER INTERFACE FORM CONTROLS
-# =====================================================================
-available_agents = sync_processor.get_valid_agents()
-
-with st.form("automation_form"):
-    st.subheader("📋 Step 1: Select Active Assignment Team")
-    chosen_agents = st.multiselect(
-        "Select working agents for today's data distribution:",
-        options=available_agents,
-        default=[]
-    )
-    submit = st.form_submit_button("🚀 Launch Scraper & Sheet Sync Pipeline")
-
-if submit:
-    status_box = st.status("Connecting to Google Sheets for structural pre-check...", expanded=True)
-    log_container = status_box.empty()
-    
-    streamlit_handler = StreamlitLogHandler(log_container)
-    sys.stdout = streamlit_handler
-    root_logger = logging.getLogger()
-    stream_handler = logging.StreamHandler(streamlit_handler)
-    root_logger.addHandler(stream_handler)
-    
-    driver = None
-    try:
-        sync_needed, matched_rows = sync_processor.check_if_sync_needed()
-        
-        if not sync_needed:
-            status_box.update(label="✅ Sheet Already Up To Date. No extraction needed!", state="complete", expanded=True)
-            st.success("The Approval worksheet is completely up-to-date with yesterday's approved records. WebPT scraper process skipped safely.")
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code == 200:
+            ok("Telegram notification dispatched successfully.")
         else:
-            st.info("New entries detected! Initializing WebPT headless interface processing...")
-            
-            driver = create_driver()
-            wait = WebDriverWait(driver, WAIT_TIMEOUT)
-            
-            login(driver, wait)
-            open_analytics(driver, wait)
-            raw_csv = navigate_scheduled_visits(driver, wait)
-            
-            if raw_csv:
-                final_csv = process_downloaded_data(raw_csv)
-                if final_csv:
-                    sync_success = sync_processor.sync_data_to_google_sheets(final_csv, matched_rows, selected_agents=chosen_agents)
-                    if sync_success:
-                        status_box.update(label="🎉 Process & Google Sheets Sync Completed Successfully!", state="complete", expanded=False)
-                        st.success("Synchronization finished smoothly.")
-                    else:
-                        status_box.update(label="⚠️ WebPT Scraped, but Google Sheets Sync Failed", state="error", expanded=True)
-            else:
-                st.error("No CSV was recovered from the pipeline execution matrix.")
-                status_box.update(label="❌ Automation script execution halted.", state="error")
-                
+            warn(f"Telegram returned status code: {response.status_code}")
     except Exception as e:
-        status_box.update(label="💥 Runtime Exception Encountered", state="error")
-        st.error(f"Execution Error: {e}")
-        
-        if driver:
-            try:
-                screenshot_path = "error_screenshot.png"
-                driver.save_screenshot(screenshot_path)
-                st.warning("🤖 Selenium has taken a screenshot of the page where it got stuck.")
-                with open(screenshot_path, "rb") as f:
-                    st.image(f.read(), caption="Headless Browser View at Crash State")
-            except Exception as img_err:
-                st.error(f"Could not extract crash view image: {img_err}")
+        fail(f"Failed to transmit Telegram webhook: {e}")
 
-        with st.expander("Show Technical Stack Trace"):
-            st.code(traceback.format_exc())
+def get_gspread_client():
+    import gspread
+    from google.oauth2.service_account import Credentials
+    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scopes)
+    return gspread.authorize(creds)
+
+def get_valid_agents():
+    """Fetches the unique historic agent options directly from the Google Sheet."""
+    try:
+        client = get_gspread_client()
+        agent_ss = client.open_by_key(AGENT_SHEET_ID)
+        approval_ws = agent_ss.worksheet("Approval")
+        existing_rows = approval_ws.get_all_values()
+        
+        if len(existing_rows) > 1:
+            agents = list(set([r[7].strip() for r in existing_rows[1:] if len(r) > 7 and r[7].strip()]))
+            return sorted(agents)
+    except Exception as e:
+        fail(f"Failed to fetch live agent pool names from Google Sheet: {e}")
+    return []
+
+def fetch_and_filter_main_rows(client):
+    """Loads and filters main sheet entries matching criteria from yesterday."""
+    main_ss = client.open_by_key(MAIN_SHEET_ID)
+    auth_ws = main_ss.worksheet("AuthSheet2026")
+    main_rows = auth_ws.get_all_values()
+    if not main_rows or len(main_rows) <= 1:
+        return []
+
+    main_data_rows = main_rows[1:]
+    yesterday_date = (datetime.now() - timedelta(days=1)).date()
+    
+    matched_main_rows = []
+    for row in main_data_rows:
+        if len(row) < 6:
+            continue
+        
+        clinic_name = row[0].strip()
+        status_val = row[3].strip()   
+        date_str = row[5].strip()     
+        
+        if clinic_name in EXCLUDED_CLINICS:
+            continue
             
-    finally:
-        root_logger.removeHandler(stream_handler)
-        sys.stdout = sys.__stdout__
-        if driver:
-            driver.quit()
+        cleaned_str = str(date_str).strip()
+        parsed_date = None
+        for fmt in ('%m/%d/%Y', '%m-%d-%Y', '%Y-%m-%d'):
+            try:
+                parsed_date = datetime.strptime(cleaned_str, fmt)
+                break
+            except ValueError:
+                pass
+        
+        if parsed_date and parsed_date.date() == yesterday_date:
+            if status_val.lower() in ["approved", "not required", "approved - not required"]:
+                matched_main_rows.append(row)
+    return matched_main_rows
+
+def get_existing_agent_keys(client):
+    """Returns unique (Patient ID, Update Date) signatures already existing in the approval sheet."""
+    agent_ss = client.open_by_key(AGENT_SHEET_ID)
+    approval_ws = agent_ss.worksheet("Approval")
+    existing_rows = approval_ws.get_all_values()
+    
+    existing_keys = set()
+    if len(existing_rows) > 1:
+        for r in existing_rows[1:]:
+            if len(r) > 3:
+                existing_keys.add((r[1].strip(), r[3].strip()))
+    return existing_keys, approval_ws
+
+def check_if_sync_needed():
+    """Step 0: Runs verification before launching WebPT automation browser."""
+    step("Pre-checking Google Sheets to see if execution is necessary...")
+    try:
+        client = get_gspread_client()
+        matched_main_rows = fetch_and_filter_main_rows(client)
+        
+        if not matched_main_rows:
+            ok("No rows matched criteria for yesterday in Main Sheet. Execution skipped.")
+            return False, []
+            
+        existing_keys, _ = get_existing_agent_keys(client)
+        unprocessed_rows = [r for r in matched_main_rows if (r[1].strip(), r[5].strip()) not in existing_keys]
+        
+        if not unprocessed_rows:
+            ok("All records from yesterday are already present in the Approval Sheet. Skipping WebPT Extraction entirely!")
+            return False, []
+            
+        ok(f"Found {len(unprocessed_rows)} unprocessed rows. Proceeding with WebPT extraction.")
+        return True, matched_main_rows
+        
+    except Exception as e:
+        fail(f"Error during Google Sheets pre-check phase: {e}")
+        return True, []
+
+def sync_data_to_google_sheets(csv_path, matched_main_rows, selected_agents=None):
+    """Processes WebPT CSV using pre-verified data matrix frames."""
+    step("Connecting to Google Sheets API to append final structured data")
+    try:
+        client = get_gspread_client()
+        existing_keys, approval_ws = get_existing_agent_keys(client)
+    except Exception as e:
+        fail(f"Failed to access Google Sheets endpoints during update phase: {e}")
+        return False
+
+    if not matched_main_rows:
+        warn("No target rows matched criteria. Ending Sync Process cleanly.")
+        return True
+
+    step("Reading and processing WebPT report data via Pandas optimization vectors...")
+    try:
+        report_df = pd.read_csv(csv_path, encoding='utf-8')
+    except Exception as e:
+        fail(f"Failed to read WebPT report: {e}")
+        return False
+        
+    # The columns match perfectly since app.py already standardizes them cleanly
+    if "Clinic Name" in report_df.columns:
+        report_df = report_df[~report_df["Clinic Name"].str.strip().isin(EXCLUDED_CLINICS)]
+    
+    today_date = datetime.now().date()
+    if "Appointment Date" in report_df.columns:
+        report_df["Parsed Date"] = pd.to_datetime(report_df["Appointment Date"], errors="coerce")
+        filtered_report_df = report_df[report_df["Parsed Date"].dt.date >= today_date].copy()
+    else:
+        filtered_report_df = report_df.copy()
+
+    upcoming_statuses = {"Checked-In", "Checked-Out", "Confirmed", "Other"}
+    scheduled_patient_ids = set()
+    
+    if "Patient ID" in filtered_report_df.columns and "Visit Status" in filtered_report_df.columns:
+        active_scheds = filtered_report_df[filtered_report_df["Visit Status"].str.strip().isin(upcoming_statuses)]
+        scheduled_patient_ids = set(active_scheds["Patient ID"].astype(str).str.strip().str.split('.').str[0].unique())
+
+    group_upcoming = []
+    group_no_upcoming = []
+    today_stamp = datetime.now().strftime("%m/%d/%Y")
+
+    for row in matched_main_rows:
+        clinic = row[0].strip()       
+        emr_id = row[1].strip()       
+        patient_name = row[2].strip() 
+        update_date = row[5].strip()  
+        
+        if emr_id in scheduled_patient_ids:
+            new_row = [clinic, emr_id, patient_name, update_date, "Already Scheduled", "", "", "", today_stamp]
+            if (emr_id, update_date) not in existing_keys:
+                group_upcoming.append(new_row)
+        else:
+            new_row = [clinic, emr_id, patient_name, update_date, "", "", "", "", today_stamp]
+            if (emr_id, update_date) not in existing_keys:
+                group_no_upcoming.append(new_row)
+
+    total_working_count = len(group_no_upcoming)
+    
+    if total_working_count > 0 and selected_agents:
+        num_agents = len(selected_agents)
+        base_share = total_working_count // num_agents
+        remainder = total_working_count % num_agents
+        
+        current_idx = 0
+        for i, agent in enumerate(selected_agents):
+            share_allocation = base_share + (remainder if i == num_agents - 1 else 0)
+            for _ in range(share_allocation):
+                if current_idx < len(group_no_upcoming):
+                    group_no_upcoming[current_idx][7] = agent 
+                    current_idx += 1
+            
+    rows_to_append = group_upcoming + group_no_upcoming
+    
+    if rows_to_append:
+        step(f"Appending {len(rows_to_append)} unique structural rows to Agent Sheet...")
+        try:
+            approval_ws.append_rows(rows_to_append, value_input_option="USER_ENTERED")
+            ok("Google Sheets append pipeline ran successfully.")
+            
+            completion_summary = (
+                f"🔔 *WebPT Automation Notice*\n\n"
+                f"Pipeline has completed processing entries!\n"
+                f"• Already Scheduled Rows: {len(group_upcoming)}\n"
+                f"• Assigned Agent Working Rows: {len(group_no_upcoming)}\n"
+                f"• Today's Stamp Added to Column I."
+            )
+            send_telegram_alert(completion_summary)
+        except Exception as e:
+            fail(f"Failed to push rows to Google Sheets endpoint: {e}")
+            return False
+    else:
+        ok("All processed rows already exist in the Agent Sheet.")
+
+    return True
