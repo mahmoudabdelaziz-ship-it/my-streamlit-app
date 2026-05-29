@@ -88,43 +88,45 @@ def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, 
 def process_downloaded_data(csv_path):
     print("🧹 Cleaning and parsing WebPT CSV structures...")
     try:
-        df = pd.read_csv(csv_path, encoding='utf-8')
+        # Load data using 'utf-8-sig' encoding to automatically catch hidden BOM marks if present
+        df = pd.read_csv(csv_path, encoding='utf-8-sig')
         
-        # Strip columns down to lowercase alphabetic strings only to handle spacing or special character variations
-        raw_to_alpha = {c: re.sub(r'[^a-z]', '', str(c).lower()) for c in df.columns}
-        
-        # 🌟 FIXED: Mappings cleaned up perfectly to ensure no keys overwrite each other
-        column_mapping = {
-            "clinicname": "Clinic Name",
-            "patientname": "Patient Name",
-            "patientid": "Patient ID",
-            "treatingtherapist": "Treating Therapist",
-            "appointmenttype": "Appointment Type",
-            "appttype": "Appointment Type",
-            "appointmentdate": "Appointment Date",
-            "apptdate": "Appointment Date",
-            "visitstatus": "Visit Status",
-            "status": "Visit Status"
-        }
+        # Lowercase and clean column text for uniform comparison
+        raw_cols = [str(c).strip().lower() for c in df.columns]
         
         rename_dict = {}
-        for raw_col, alpha_col in raw_to_alpha.items():
-            if alpha_col in column_mapping:
-                rename_dict[raw_col] = column_mapping[alpha_col]
-        
-        # Apply normalization rename transformations
+        # Robust Substring Search Matching Loop
+        for original_col in df.columns:
+            cleaned = str(original_col).strip().lower()
+            
+            if "clinic" in cleaned and "name" in cleaned:
+                rename_dict[original_col] = "Clinic Name"
+            elif "patient" in cleaned and "name" in cleaned:
+                rename_dict[original_col] = "Patient Name"
+            elif "patient" in cleaned and "id" in cleaned:
+                rename_dict[original_col] = "Patient ID"
+            elif "therapist" in cleaned:
+                rename_dict[original_col] = "Treating Therapist"
+            elif "type" in cleaned:
+                rename_dict[original_col] = "Appointment Type"
+            elif "date" in cleaned:
+                rename_dict[original_col] = "Appointment Date"
+            elif "status" in cleaned:
+                rename_dict[original_col] = "Visit Status"
+
+        # Apply mapped label assignments
         df = df.rename(columns=rename_dict)
         
-        # Validate that all required structural indices are cleanly present
+        # Verify columns match standard structural pipeline criteria
         target_columns = ["Patient ID", "Patient Name", "Clinic Name", "Treating Therapist", "Appointment Type", "Appointment Date", "Visit Status"]
         for col in target_columns:
             if col not in df.columns:
                 raise KeyError(f"Critical index column '{col}' could not be resolved from CSV source.")
                 
-        # Retain and rearrange target columns
+        # Re-index to keep only required features
         df = df[target_columns]
         
-        # Vectorized string sanitization instead of cell-by-cell loops
+        # Sanitize object columns efficiently
         for col in df.select_dtypes(include=['object']).columns:
             df[col] = df[col].astype(str).str.replace('\u201a', ',', regex=False).str.replace('â€š', ',', regex=False).str.strip()
             
