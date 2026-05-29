@@ -111,12 +111,18 @@ def create_driver() -> webdriver.Chrome:
     options.add_argument("--disable-popup-blocking") 
     options.add_argument("--ignore-certificate-errors")
     
-    # Block native automation flags that sites use to discover headless bots
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
     
-    options.add_experimental_option("prefs", {"download.default_directory": DOWNLOAD_PATH, "download.prompt_for_download": False, "safebrowsing.enabled": True})
+    prefs = {
+        "download.default_directory": DOWNLOAD_PATH,
+        "download.prompt_for_download": False,
+        "download.directory_upgrade": True,
+        "safebrowsing.enabled": False  # Keeps Chrome from pausing downloads to ask if the CSV is "safe"
+    }
+    options.add_experimental_option("prefs", prefs)
+    
     if USE_PROXY:
         try:
             host, port = PROXY_ENDPOINT.strip().split(":")
@@ -124,6 +130,7 @@ def create_driver() -> webdriver.Chrome:
             options.add_argument(f'--load-extension={os.path.dirname(plugin_file)}')
         except: 
             pass
+            
     if os.name == 'posix':
         if os.path.exists("/usr/bin/chromium-browser"): 
             options.binary_location = "/usr/bin/chromium-browser"
@@ -132,18 +139,37 @@ def create_driver() -> webdriver.Chrome:
         driver = webdriver.Chrome(options=options)
     else:
         driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    
+    # 🌟 CRITICAL FIX: Direct command override instructing headless Chrome to allow downloads
+    driver.execute_cdp_cmd("Page.setDownloadBehavior", {
+        "behavior": "allow",
+        "downloadPath": DOWNLOAD_PATH
+    })
+    
     return driver
 
-def wait_for_new_csv(download_dir, before_files, timeout=45):
-    print("⏳ Waiting for CSV generation and completion down the pipe...")
+def wait_for_new_csv(download_dir, before_files, timeout=60):
+    print("⏳ Watching target folder for incoming WebPT report...")
     end_time = time.time() + timeout
     while time.time() < end_time:
         current_files = set(os.listdir(download_dir))
-        new_csvs = [f for f in (current_files - before_files) if f.endswith('.csv')]
-        if new_csvs: 
-            return os.path.join(download_dir, new_csvs[0])
-        time.sleep(1)
-    return None
+        new_files = current_files - before_files
+        
+        # Check for completed CSVs
+        new_csvs = [f for f in new_files if f.endswith('.csv')]
+        
+        # Check if Chrome is still actively downloading the file (.crdownload)
+        active_downloads = [f for f in new_files if f.endswith('.crdownload') or f.endswith('.tmp')]
+        
+        if new_csvs and not active_downloads: 
+            target_file = os.path.join(download_dir, new_csvs[0])
+            print(f"📥 File captured successfully: {new_csvs[0]}")
+            return target_file
+            
+        time.sleep(1.5)
+        
+    # Hard stop if time expires
+    raise TimeoutError(f"WebPT initiated export, but no file arrived in {timeout} seconds.")
 
 def login(driver, wait):
     print("🚀 Navigating to WebPT Login Page...")
@@ -167,7 +193,6 @@ def open_analytics(driver, wait):
     main_window = driver.current_window_handle
     driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".analytics-icon"))))
     
-    # Give it a rigid 15-second cap to switch windows so it doesn't spin infinitely
     window_wait_timeout = time.time() + 15
     while len(driver.window_handles) == 1:
         if time.time() > window_wait_timeout:
@@ -214,10 +239,11 @@ def navigate_scheduled_visits(driver, wait):
         pass
     time.sleep(4)
     
-    print("📥 Triggering report download...")
+    print("📥 Triggering report download click...")
     before_files = set(os.listdir(DOWNLOAD_PATH))
     driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.ID, "ExportDataBtn"))))
     driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.XPATH, "//*[text()='CSV']"))))
+    
     return wait_for_new_csv(DOWNLOAD_PATH, before_files)
 
 
@@ -247,14 +273,12 @@ if submit:
     
     driver = None
     try:
-        # STEP 1: Connect and check Google Sheet BEFORE running WebPT extraction logic
         sync_needed, matched_rows = sync_processor.check_if_sync_needed()
         
         if not sync_needed:
             status_box.update(label="✅ Sheet Already Up To Date. No extraction needed!", state="complete", expanded=True)
             st.success("The Approval worksheet is completely up-to-date with yesterday's approved records. WebPT scraper process skipped safely.")
         else:
-            # STEP 2: Only spin up Selenium Chrome instance if new rows are verified missing
             st.info("New entries detected! Initializing WebPT headless interface processing...")
             
             driver = create_driver()
@@ -281,7 +305,6 @@ if submit:
         status_box.update(label="💥 Runtime Exception Encountered", state="error")
         st.error(f"Execution Error: {e}")
         
-        # 📸 DIAGNOSTIC SCREENSHOT: Take a photo if it fails or hits a timeout
         if driver:
             try:
                 screenshot_path = "error_screenshot.png"
