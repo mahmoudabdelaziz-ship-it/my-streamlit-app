@@ -105,7 +105,7 @@ def process_downloaded_data(csv_path):
             elif ("patient" in cleaned and "name" in cleaned) or ("pt" in cleaned and "name" in cleaned) or (cleaned == "patient"):
                 rename_dict[original_col] = "Patient Name"
             # Flexible condition matching for variations like 'Patient ID', 'Pt ID', 'MRN', 'Account', or 'EMR'
-            elif "patient" in cleaned and ("id" in cleaned or "mrn" in cleaned or "account" in cleaned or "emr" in cleaned) or (cleaned == "patient id" or cleaned == "pt id"):
+            elif ("patient" in cleaned and ("id" in cleaned or "mrn" in cleaned or "account" in cleaned or "emr" in cleaned)) or (cleaned == "patient id" or cleaned == "pt id"):
                 rename_dict[original_col] = "Patient ID"
             elif "therapist" in cleaned or "provider" in cleaned:
                 rename_dict[original_col] = "Treating Therapist"
@@ -244,10 +244,17 @@ def open_analytics(driver, wait):
 
 def navigate_scheduled_visits(driver, wait):
     print("📂 Expanding Reports UI layout...")
-    WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.XPATH, "//div[@id='REPORTS'] | //div[text()='REPORTS']"))).click()
-    time.sleep(1)
-    sv = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.XPATH, "//div[@id='scheduled_visits']")))
-    driver.execute_script("arguments[0].click();", sv)
+    # Target the main REPORTS dropdown section securely
+    WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.XPATH, "//div[@id='REPORTS'] | //div[text()='REPORTS'] | //span[text()='REPORTS']"))).click()
+    time.sleep(1.5)
+    
+    # Text-based absolute targeting avoids structural dashboard shifts
+    print("🎯 Selecting Scheduled Visits Report module...")
+    scheduled_visits_text_node = WebDriverWait(driver, 20).until(
+        EC.presence_of_element_located((By.XPATH, "//div[contains(text(), 'Scheduled Visits')] | //span[contains(text(), 'Scheduled Visits')] | //a[contains(text(), 'Scheduled Visits')]"))
+    )
+    driver.execute_script("arguments[0].click();", scheduled_visits_text_node)
+    time.sleep(3)
     
     print("⚙️ Adjusting data column overlays...")
     options_btn = WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.ID, "OptionsBtn")))
@@ -257,6 +264,7 @@ def navigate_scheduled_visits(driver, wait):
     required_columns = ["Clinic Name", "Patient Name", "Patient ID", "Treating Therapist", "Appointment Type", "Appointment Date", "Visit Status"]
     for col in required_columns:
         try: 
+            # Force layout checkboxes configuration
             driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, f"//span[text()='{col}']/preceding-sibling::input"))
         except: 
             pass
