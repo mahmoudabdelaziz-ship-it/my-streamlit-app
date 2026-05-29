@@ -5,6 +5,7 @@ import traceback
 import sys
 import io
 import zipfile
+import re
 import pandas as pd
 import streamlit as st
 from datetime import datetime, timedelta
@@ -89,15 +90,47 @@ def process_downloaded_data(csv_path):
     try:
         df = pd.read_csv(csv_path, encoding='utf-8')
         
-        # Fast vector selection instead of element-by-element dataset looping
-        for col in df.select_dtypes(include=['object']).columns:
-            df[col] = df[col].str.replace('\u201a', ',', regex=False).str.replace('â€š', ',', regex=False)
-            
+        # 🌟 BULLETPROOF NORMALIZATION: Strip columns down to lowercase alphabetic strings only
+        raw_to_alpha = {c: re.sub(r'[^a-z]', '', str(c).lower()) for c in df.columns}
+        
+        # Map alpha strings directly to required standard structures
+        column_mapping = {
+            "clinicname": "Clinic Name",
+            "patientname": "Patient Name",
+            "patientid": "Patient ID",
+            "patientid": "Patient ID",  # Handles edge-case punctuation variations like Patient I'D
+            "treatingtherapist": "Treating Therapist",
+            "appointmenttype": "Appointment Type",
+            "appttype": "Appointment Type",
+            "appointmentdate": "Appointment Date",
+            "apptdate": "Appointment Date",
+            "visitstatus": "Visit Status",
+            "status": "Visit Status"
+        }
+        
+        rename_dict = {}
+        for raw_col, alpha_col in raw_to_alpha.items():
+            if alpha_col in column_mapping:
+                rename_dict[raw_col] = column_mapping[alpha_col]
+        
+        # Apply normalization rename transformations
+        df = df.rename(columns=rename_dict)
+        
+        # Validate that all required structural indices are cleanly present
         target_columns = ["Patient ID", "Patient Name", "Clinic Name", "Treating Therapist", "Appointment Type", "Appointment Date", "Visit Status"]
+        for col in target_columns:
+            if col not in df.columns:
+                raise KeyError(f"Critical index column '{col}' could not be resolved from CSV source.")
+                
+        # Retain and rearrange target columns
         df = df[target_columns]
         
+        # Vectorized string sanitization instead of cell-by-cell loops
+        for col in df.select_dtypes(include=['object']).columns:
+            df[col] = df[col].astype(str).str.replace('\u201a', ',', regex=False).str.replace('â€š', ',', regex=False).str.strip()
+            
         excluded_clinics = {'Home Care', 'Sensory Freeway', 'PTOC - Telehealth', '[PTOC - Telehealth]'}
-        df = df[~df["Clinic Name"].str.strip().isin(excluded_clinics)]
+        df = df[~df["Clinic Name"].isin(excluded_clinics)]
         
         df["Appointment Date"] = pd.to_datetime(df["Appointment Date"], errors="coerce")
         df = df.sort_values(by=["Visit Status", "Appointment Date", "Clinic Name"], ascending=[True, True, True])
