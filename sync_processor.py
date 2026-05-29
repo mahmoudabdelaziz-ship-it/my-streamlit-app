@@ -80,22 +80,44 @@ def parse_sheet_date(date_str):
             pass
     return None
 
-def sync_data_to_google_sheets(csv_path):
+    def sync_data_to_google_sheets(csv_path):
     step("Connecting to Google Sheets API via Decoupled Sync Processor")
     try:
         import gspread
         from google.oauth2.service_account import Credentials
-        import streamlit as st  # <-- Import Streamlit to read secrets
+        import streamlit as st
     except ImportError:
         fail("Required Google Sheets libraries not installed. Please install gspread and google-auth.")
         return False
+
+    # ❌ REMOVED: Old local hardcoded path variables
+    MAIN_SHEET_ID = "1VVM9vExR_4xUN0dp25IF7PiKlTqKTEj-EZ8IwqYn5RA"
+    AGENT_SHEET_ID = "1LgPyUHsxZMioLIOgNRk2IgQOEEU70cHA45fUtoCed6c"
 
     try:
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive"
         ]
+        google_creds_dict = st.secrets["gcp_service_account"]
+        creds = Credentials.from_service_account_info(google_creds_dict, scopes=scopes)
+        client = gspread.authorize(creds)
+        ok("Authenticated successfully with Google service account")
+    except Exception as e:
+        fail(f"Failed to authenticate with Google: {e}")
+        return False
+
+    # ❌ REMOVED THE CRASHING BLOCK HERE:
+    # (The old code checked if os.path.exists(CREDENTIALS_PATH) here and crashed)
+
+    # 1. Load data from AuthSheet2026 (Main Sheet)
+    step("Reading AuthSheet2026 data from Main Sheet")
+    try:
+        main_ss = client.open_by_key(MAIN_SHEET_ID)
+        auth_ws = main_ss.worksheet("AuthSheet2026")
+        main_rows = auth_ws.get_all_values()
         
+        # ... Rest of your sync_processor.py code continues exactly as before ...
         # 🔥 FIX: Load credentials directly from Streamlit secure secrets dictionary
         google_creds_dict = st.secrets["gcp_service_account"]
         creds = Credentials.from_service_account_info(google_creds_dict, scopes=scopes)
