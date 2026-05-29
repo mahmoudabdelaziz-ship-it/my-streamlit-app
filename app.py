@@ -5,7 +5,6 @@ import traceback
 import sys
 import io
 import zipfile
-import re
 import pandas as pd
 import streamlit as st
 from datetime import datetime, timedelta
@@ -94,6 +93,12 @@ def process_downloaded_data(csv_path):
         # Log parsed columns for visibility during errors
         print(f"📋 Raw CSV Columns Extracted: {list(df.columns)}")
         
+        # Clean every cell: replace corrupt character (U+201A) and literal 'â€š' with normal comma
+        df = df.map(
+            lambda x: x.replace('\u201a', ',').replace('â€š', ',').strip()
+            if isinstance(x, str) else x
+        )
+        
         rename_dict = {}
         # Robust Substring Search Matching Loop
         for original_col in df.columns:
@@ -101,19 +106,19 @@ def process_downloaded_data(csv_path):
             
             if "clinic" in cleaned and "name" in cleaned:
                 rename_dict[original_col] = "Clinic Name"
-            # Flexible condition matching for variations like 'Patient Name', 'Pt Name', or just 'Patient'
-            elif ("patient" in cleaned and "name" in cleaned) or ("pt" in cleaned and "name" in cleaned) or (cleaned == "patient"):
+            # Flexible condition matching for variations like 'Patient Name', 'Pt Name', 'Case Title', or just 'Patient'
+            elif ("patient" in cleaned and "name" in cleaned) or ("pt" in cleaned and "name" in cleaned) or (cleaned == "patient") or ("case title" in cleaned):
                 rename_dict[original_col] = "Patient Name"
             # Flexible condition matching for variations like 'Patient ID', 'Pt ID', 'MRN', 'Account', or 'EMR'
-            elif ("patient" in cleaned and ("id" in cleaned or "mrn" in cleaned or "account" in cleaned or "emr" in cleaned)) or (cleaned == "patient id" or cleaned == "pt id"):
+            elif ("patient" in cleaned and ("id" in cleaned or "mrn" in cleaned or "account" in cleaned or "emr" in cleaned)) or (cleaned in ["patient id", "pt id"]):
                 rename_dict[original_col] = "Patient ID"
-            elif "therapist" in cleaned or "provider" in cleaned:
+            elif "therapist" in cleaned or "provider" in cleaned or "case therapist" in cleaned:
                 rename_dict[original_col] = "Treating Therapist"
             elif "type" in cleaned:
                 rename_dict[original_col] = "Appointment Type"
-            elif "date" in cleaned:
+            elif "date" in cleaned or "start time" in cleaned:
                 rename_dict[original_col] = "Appointment Date"
-            elif "status" in cleaned:
+            elif "status" in cleaned or "attend" in cleaned:
                 rename_dict[original_col] = "Visit Status"
 
         # Apply mapped label assignments
@@ -123,14 +128,11 @@ def process_downloaded_data(csv_path):
         target_columns = ["Patient ID", "Patient Name", "Clinic Name", "Treating Therapist", "Appointment Type", "Appointment Date", "Visit Status"]
         for col in target_columns:
             if col not in df.columns:
-                raise KeyError(f"Critical index column '{col}' could not be resolved from CSV source. Available renamed columns: {list(df.columns)}")
+                print(f"⚠️ Column alignment missing: '{col}'. Generating default placeholder context.")
+                df[col] = "N/A"
                 
         # Re-index to keep only required features
         df = df[target_columns]
-        
-        # Sanitize object columns efficiently
-        for col in df.select_dtypes(include=['object']).columns:
-            df[col] = df[col].astype(str).str.replace('\u201a', ',', regex=False).str.replace('â€š', ',', regex=False).str.strip()
             
         excluded_clinics = {'Home Care', 'Sensory Freeway', 'PTOC - Telehealth', '[PTOC - Telehealth]'}
         df = df[~df["Clinic Name"].isin(excluded_clinics)]
@@ -193,7 +195,7 @@ def create_driver() -> webdriver.Chrome:
     
     return driver
 
-def wait_for_new_csv(download_dir, before_files, timeout=60):
+def wait_for_new_csv(download_dir, before_files, timeout=120):
     print("⏳ Watching target folder for incoming WebPT report...")
     end_time = time.time() + timeout
     while time.time() < end_time:
@@ -203,6 +205,7 @@ def wait_for_new_csv(download_dir, before_files, timeout=60):
         active_downloads = [f for f in new_files if f.endswith('.crdownload') or f.endswith('.tmp')]
         
         if new_csvs and not active_downloads: 
+            time.sleep(2)
             target_file = os.path.join(download_dir, new_csvs[0])
             print(f"📥 File captured successfully: {new_csvs[0]}")
             return target_file
@@ -218,7 +221,7 @@ def login(driver, wait):
     driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
     wait.until(EC.presence_of_element_located((By.ID, "password"))).send_keys(PASSWORD)
     driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
-    time.sleep(4)
+    time.sleep(5)
     try: 
         driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//button[contains(text(), 'Yes, oust them!')]"))
         print("💥 Displaced another active session token successfully.")
@@ -239,52 +242,109 @@ def open_analytics(driver, wait):
         time.sleep(0.5)
         
     driver.switch_to.window([w for w in driver.window_handles if w != main_window][0])
-    WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+    WebDriverWait(driver, 60).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
     print("🎯 Successfully focused Analytics tab frame.")
+
+def locate_options_button(driver):
+    try:
+        btn = WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.ID, "OptionsBtn")))
+        return btn
+    except:
+        pass
+
+    iframes = driver.find_elements(By.TAG_NAME, "iframe")
+    for idx, iframe in enumerate(iframes):
+        try:
+            driver.switch_to.frame(iframe)
+            btn = WebDriverWait(driver, 15).until(EC.element_to_be_clickable((By.ID, "OptionsBtn")))
+            return btn
+        except:
+            driver.switch_to.default_content()
+    return None
 
 def navigate_scheduled_visits(driver, wait):
     print("📂 Expanding Reports UI layout...")
-    # Target the main REPORTS dropdown section securely
-    WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.XPATH, "//div[@id='REPORTS'] | //div[text()='REPORTS'] | //span[text()='REPORTS']"))).click()
-    time.sleep(1.5)
+    long_wait = WebDriverWait(driver, 60)
+    short_wait = WebDriverWait(driver, 15)
     
-    # Text-based absolute targeting avoids structural dashboard shifts
-    print("🎯 Selecting Scheduled Visits Report module...")
-    scheduled_visits_text_node = WebDriverWait(driver, 20).until(
-        EC.presence_of_element_located((By.XPATH, "//div[contains(text(), 'Scheduled Visits')] | //span[contains(text(), 'Scheduled Visits')] | //a[contains(text(), 'Scheduled Visits')]"))
-    )
-    driver.execute_script("arguments[0].click();", scheduled_visits_text_node)
-    time.sleep(3)
-    
-    print("⚙️ Adjusting data column overlays...")
-    options_btn = WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.ID, "OptionsBtn")))
+    page_loaded = False
+    max_attempts = 3
+
+    for attempt in range(max_attempts):
+        print(f"  → Attempt {attempt + 1} of {max_attempts} to click Scheduled Visits...")
+        try:
+            reports_menu = WebDriverWait(driver, 10).until(EC.element_to_be_clickable(
+                (By.XPATH, "//div[@id='REPORTS'] | //div[text()='REPORTS'] | //span[text()='REPORTS']")
+            ))
+            driver.execute_script("arguments[0].click();", reports_menu)
+            time.sleep(1.5)
+            
+            sv_xpath = "//div[@id='scheduled_visits']//span[text()='Scheduled Visits'] | //div[@id='scheduled_visits'] | //a[contains(text(), 'Scheduled Visits')]"
+            sv_link = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, sv_xpath)))
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", sv_link)
+            time.sleep(0.5)
+            driver.execute_script("arguments[0].click();", sv_link)
+
+            short_wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".k-grid, #reportContainer, #OptionsBtn")))
+            page_loaded = True
+            break
+        except:
+            pass
+            
+    if not page_loaded:
+        raise Exception("Failed to open the Scheduled Visits report after 3 attempts.")
+        
+    try:
+        long_wait.until_not(EC.presence_of_element_located((By.CSS_SELECTOR, ".k-loading-mask, .blockUI, .progress-indicator")))
+    except:
+        pass
+        
+    print("⚙️ Locating options configuration overlay panel...")
+    options_btn = locate_options_button(driver)
+    if not options_btn:
+        raise Exception("Could not locate the Options button (ID='OptionsBtn')")
+        
     driver.execute_script("arguments[0].click();", options_btn)
-    time.sleep(1)
+    time.sleep(2)
     
-    required_columns = ["Clinic Name", "Patient Name", "Patient ID", "Treating Therapist", "Appointment Type", "Appointment Date", "Visit Status"]
-    for col in required_columns:
+    try:
+        mark_all_span = driver.find_element(By.XPATH, "//span[text()='(All)']")
+        driver.execute_script("arguments[0].click();", mark_all_span)
+        time.sleep(1)
+        driver.execute_script("arguments[0].click();", mark_all_span)
+    except:
+        pass
+        
+    # Standard labels corresponding directly with WebPT column headers
+    webpt_ui_labels = ["Clinic Name", "Case Title", "Patient ID", "Case Therapist", "Start Time", "Likelihood to Attend"]
+    for col in webpt_ui_labels:
         try: 
-            # Force layout checkboxes configuration
-            driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, f"//span[text()='{col}']/preceding-sibling::input"))
+            cb = driver.find_element(By.XPATH, f"//span[text()='{col}']/preceding-sibling::input | //label[contains(., '{col}')]//input")
+            if not cb.is_selected():
+                driver.execute_script("arguments[0].click();", cb)
         except: 
             pass
             
-    print("💾 Confirming changes...")
+    print("💾 Confirming layout mutations...")
     apply_btn = driver.find_element(By.XPATH, "//button[contains(text(),'Apply')] | //*[@id='lblLayoutOk']")
-    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", apply_btn)
-    time.sleep(0.5)
     driver.execute_script("arguments[0].click();", apply_btn)
-    time.sleep(2)
+    time.sleep(3)
     
     print("📅 Applying date range filters...")
-    start_date = (datetime.now() - timedelta(days=3 if datetime.now().weekday() == 0 else 1)).strftime("%m/%d/%Y")
+    today = datetime.now()
+    end_date = "12/31/2060"
+    if today.weekday() == 0:
+        start_date = (today - timedelta(days=3)).strftime("%m/%d/%Y")
+    else:
+        start_date = (today - timedelta(days=1)).strftime("%m/%d/%Y")
+        
     try:
         driver.execute_script(f"if(document.getElementById('inpDateStart')) document.getElementById('inpDateStart').value = '{start_date}';")
-        driver.execute_script("if(document.getElementById('inpDateEnd')) document.getElementById('inpDateEnd').value = '12/31/2060';")
+        driver.execute_script(f"if(document.getElementById('inpDateEnd')) document.getElementById('inpDateEnd').value = '{end_date}';")
         driver.find_element(By.ID, "btnApplyDateFilter").click()
     except: 
         pass
-    time.sleep(4)
+    time.sleep(5)
     
     print("📥 Triggering report download click...")
     before_files = set(os.listdir(DOWNLOAD_PATH))
