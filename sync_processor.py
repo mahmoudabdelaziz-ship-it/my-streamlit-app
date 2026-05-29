@@ -4,6 +4,7 @@ import logging
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
+import streamlit as st
 
 log = logging.getLogger(__name__)
 
@@ -13,8 +14,8 @@ def warn(msg: str): log.warning(f"⚠ {msg}")
 def fail(msg: str): log.error(f"✖ {msg}")
 
 # Telegram Configuration
-TELEGRAM_TOKEN = "8505238756:AAGN-qHwd82droyjKiIXc3TkG-bO1LCNm-M"
-TELEGRAM_CHAT_ID = "6876822271"  # Replace with your real numeric Chat ID!
+TELEGRAM_TOKEN = st.secrets["TELEGRAM_TOKEN"]
+TELEGRAM_CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
 
 def send_telegram_alert(message):
     """Dispatches an alert and returns the current epoch time of transmission."""
