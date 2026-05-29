@@ -151,7 +151,6 @@ def sync_data_to_google_sheets(csv_path, matched_main_rows, selected_agents=None
         fail(f"Failed to read WebPT report: {e}")
         return False
         
-    # The columns match perfectly since app.py already standardizes them cleanly
     if "Clinic Name" in report_df.columns:
         report_df = report_df[~report_df["Clinic Name"].str.strip().isin(EXCLUDED_CLINICS)]
     
@@ -174,9 +173,9 @@ def sync_data_to_google_sheets(csv_path, matched_main_rows, selected_agents=None
     today_stamp = datetime.now().strftime("%m/%d/%Y")
 
     for row in matched_main_rows:
-        clinic = row[0].strip()       
-        emr_id = row[1].strip()       
-        patient_name = row[2].strip() 
+        clinic = row[0].strip()        
+        emr_id = row[1].strip()        
+        patient_name = row[2].strip()  
         update_date = row[5].strip()  
         
         if emr_id in scheduled_patient_ids:
