@@ -110,6 +110,12 @@ def create_driver() -> webdriver.Chrome:
     options.add_argument("--disable-notifications")
     options.add_argument("--disable-popup-blocking") 
     options.add_argument("--ignore-certificate-errors")
+    
+    # Block native automation flags that sites use to discover headless bots
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
+    
     options.add_experimental_option("prefs", {"download.default_directory": DOWNLOAD_PATH, "download.prompt_for_download": False, "safebrowsing.enabled": True})
     if USE_PROXY:
         try:
@@ -128,7 +134,8 @@ def create_driver() -> webdriver.Chrome:
         driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     return driver
 
-def wait_for_new_csv(download_dir, before_files, timeout=120):
+def wait_for_new_csv(download_dir, before_files, timeout=45):
+    print("⏳ Waiting for CSV generation and completion down the pipe...")
     end_time = time.time() + timeout
     while time.time() < end_time:
         current_files = set(os.listdir(download_dir))
@@ -139,7 +146,9 @@ def wait_for_new_csv(download_dir, before_files, timeout=120):
     return None
 
 def login(driver, wait):
+    print("🚀 Navigating to WebPT Login Page...")
     driver.get(WEBPT_URL)
+    print("✍️ Entering Credentials...")
     wait.until(EC.presence_of_element_located((By.ID, "username"))).send_keys(USERNAME)
     driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
     wait.until(EC.presence_of_element_located((By.ID, "password"))).send_keys(PASSWORD)
@@ -147,22 +156,36 @@ def login(driver, wait):
     time.sleep(4)
     try: 
         driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//button[contains(text(), 'Yes, oust them!')]"))
+        print("💥 Displaced another active session token successfully.")
     except: 
         pass
     wait.until(EC.presence_of_element_located((By.LINK_TEXT, "Advanced Search")))
+    print("🔓 Logged in successfully!")
 
 def open_analytics(driver, wait):
+    print("📊 Accessing WebPT Analytics Engine Hub...")
     main_window = driver.current_window_handle
     driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".analytics-icon"))))
-    wait.until(EC.new_window_is_opened([main_window]))
+    
+    # Give it a rigid 15-second cap to switch windows so it doesn't spin infinitely
+    window_wait_timeout = time.time() + 15
+    while len(driver.window_handles) == 1:
+        if time.time() > window_wait_timeout:
+            raise TimeoutError("WebPT Analytics multi-window execution target took too long to load.")
+        time.sleep(0.5)
+        
     driver.switch_to.window([w for w in driver.window_handles if w != main_window][0])
-    WebDriverWait(driver, 60).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+    WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+    print("🎯 Successfully focused Analytics tab frame.")
 
 def navigate_scheduled_visits(driver, wait):
+    print("📂 Expanding Reports UI layout...")
     WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.XPATH, "//div[@id='REPORTS'] | //div[text()='REPORTS']"))).click()
     time.sleep(1)
     sv = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.XPATH, "//div[@id='scheduled_visits']")))
     driver.execute_script("arguments[0].click();", sv)
+    
+    print("⚙️ Adjusting data column overlays...")
     options_btn = WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.ID, "OptionsBtn")))
     driver.execute_script("arguments[0].click();", options_btn)
     time.sleep(1)
@@ -174,15 +197,14 @@ def navigate_scheduled_visits(driver, wait):
         except: 
             pass
             
-    # =====================================================================
-    # FIXED: JavaScript execution injection to bypass Terms Interception
-    # =====================================================================
+    print("💾 Confirming changes...")
     apply_btn = driver.find_element(By.XPATH, "//button[contains(text(),'Apply')] | //*[@id='lblLayoutOk']")
     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", apply_btn)
     time.sleep(0.5)
     driver.execute_script("arguments[0].click();", apply_btn)
     time.sleep(2)
     
+    print("📅 Applying date range filters...")
     start_date = (datetime.now() - timedelta(days=3 if datetime.now().weekday() == 0 else 1)).strftime("%m/%d/%Y")
     try:
         driver.execute_script(f"if(document.getElementById('inpDateStart')) document.getElementById('inpDateStart').value = '{start_date}';")
@@ -192,6 +214,7 @@ def navigate_scheduled_visits(driver, wait):
         pass
     time.sleep(4)
     
+    print("📥 Triggering report download...")
     before_files = set(os.listdir(DOWNLOAD_PATH))
     driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.ID, "ExportDataBtn"))))
     driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.XPATH, "//*[text()='CSV']"))))
@@ -257,6 +280,18 @@ if submit:
     except Exception as e:
         status_box.update(label="💥 Runtime Exception Encountered", state="error")
         st.error(f"Execution Error: {e}")
+        
+        # 📸 DIAGNOSTIC SCREENSHOT: Take a photo if it fails or hits a timeout
+        if driver:
+            try:
+                screenshot_path = "error_screenshot.png"
+                driver.save_screenshot(screenshot_path)
+                st.warning("🤖 Selenium has taken a screenshot of the page where it got stuck.")
+                with open(screenshot_path, "rb") as f:
+                    st.image(f.read(), caption="Headless Browser View at Crash State")
+            except Exception as img_err:
+                st.error(f"Could not extract crash view image: {img_err}")
+
         with st.expander("Show Technical Stack Trace"):
             st.code(traceback.format_exc())
             
