@@ -135,7 +135,6 @@ def sync_data_to_google_sheets(csv_path, matched_main_rows, selected_agents=None
     step("Connecting to Google Sheets API to append final structured data")
     try:
         client = get_gspread_client()
-        # FIX: Directly use the existing database data loaded from check_if_sync_needed to avoid hanging
         existing_keys, approval_ws = get_existing_agent_keys(client)
     except Exception as e:
         fail(f"Failed to access Google Sheets endpoints during update phase: {e}")
@@ -190,7 +189,6 @@ def sync_data_to_google_sheets(csv_path, matched_main_rows, selected_agents=None
 
     total_working_count = len(group_no_upcoming)
     
-    # Process Workload Split across UI designated agents
     if total_working_count > 0 and selected_agents:
         num_agents = len(selected_agents)
         base_share = total_working_count // num_agents
