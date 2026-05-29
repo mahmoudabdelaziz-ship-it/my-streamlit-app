@@ -70,32 +70,11 @@ except Exception as e:
     PASSWORD      = "CityPT10$"
     USE_PROXY     = False
 
-# =====================================================================
-# NATIVE AUTHENTICATED PROXY EXTENSION GENERATOR
-# =====================================================================
+# [Functions create_proxy_auth_extension, process_downloaded_data, create_driver, wait_for_new_csv, login, open_analytics, navigate_scheduled_visits go here...]
 def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, folder_path="/tmp"):
-    manifest_json = """
-    {
-        "version": "1.0.0",
-        "manifest_version": 3,
-        "name": "Chrome Proxy Auth Extension",
-        "permissions": ["proxy", "tabs", "unlimitedStorage", "storage", "<all_urls>", "webRequest", "webRequestAuthProvider"],
-        "background": { "service_worker": "background.js" }
-    }
-    """
-    background_js = f"""
-    var config = {{
-        mode: "fixed_servers",
-        rules: {{ singleProxy: {{ scheme: "http", host: "{proxy_host}", port: parseInt({proxy_port}) }}, bypassList: [] }}
-    }};
-    chrome.proxy.settings.set({{value: config, scope: "regular"}}, function({{}});
-    chrome.webRequest.onAuthRequired.addListener(
-        function(details) {{ return {{ authCredentials: {{ username: "{proxy_user}", password: "{proxy_pass}" }} }}; }},
-        {{urls: ["<all_urls>"]}}, ["blocking"]
-    );
-    """
-    if not os.path.exists(folder_path):
-        os.makedirs(folder_path)
+    manifest_json = '{"version": "1.0.0", "manifest_version": 3, "name": "Chrome Proxy Auth Extension", "permissions": ["proxy", "tabs", "unlimitedStorage", "storage", "<all_urls>", "webRequest", "webRequestAuthProvider"], "background": { "service_worker": "background.js" }}'
+    background_js = f'var config = {{ mode: "fixed_servers", rules: {{ singleProxy: {{ scheme: "http", host: "{proxy_host}", port: parseInt({proxy_port}) }}, bypassList: [] }} }}; chrome.proxy.settings.set({{value: config, scope: "regular"}}, function({{}}); chrome.webRequest.onAuthRequired.addListener(function(details) {{ return {{ authCredentials: {{ username: "{proxy_user}", password: "{proxy_pass}" }} }}; }}, {{urls: ["<all_urls>"]}}, ["blocking"]);'
+    if not os.path.exists(folder_path): os.makedirs(folder_path)
     plugin_path = os.path.join(folder_path, "proxy_auth_plugin.zip")
     with zipfile.ZipFile(plugin_path, 'w') as zp:
         zp.writestr("manifest.json", manifest_json)
@@ -115,8 +94,7 @@ def process_downloaded_data(csv_path):
         df["Appointment Date"] = df["Appointment Date"].dt.strftime("%Y-%m-%d")
         df.to_csv(csv_path, index=False, encoding='utf-8')
         return csv_path
-    except Exception as e:
-        return None
+    except: return None
 
 def create_driver() -> webdriver.Chrome:
     options = webdriver.ChromeOptions()
@@ -128,48 +106,27 @@ def create_driver() -> webdriver.Chrome:
     options.add_argument("--disable-notifications")
     options.add_argument("--disable-popup-blocking") 
     options.add_argument("--ignore-certificate-errors")
-    options.add_argument("--allow-running-insecure-content")
-    
-    prefs = {
-        "download.default_directory": DOWNLOAD_PATH,
-        "download.prompt_for_download": False,
-        "download.directory_upgrade": True,
-        "safebrowsing.enabled": True,
-        "profile.default_content_setting_values.geolocation": 1 
-    }
-    options.add_experimental_option("prefs", prefs)
-    
+    options.add_experimental_option("prefs", {"download.default_directory": DOWNLOAD_PATH, "download.prompt_for_download": False, "safebrowsing.enabled": True})
     if USE_PROXY:
         try:
             host, port = PROXY_ENDPOINT.strip().split(":")
             plugin_file = create_proxy_auth_extension(host, port, PROXY_USER.strip(), PROXY_PASS.strip())
             options.add_argument(f'--load-extension={os.path.dirname(plugin_file)}')
-        except Exception as proxy_err:
-            pass
-
-    if os.name == 'posix': 
-        if os.path.exists("/usr/bin/chromium-browser"):
-            options.binary_location = "/usr/bin/chromium-browser"
-        elif os.path.exists("/usr/bin/chromium"):
-            options.binary_location = "/usr/bin/chromium"
+        except: pass
+    if os.name == 'posix':
+        if os.path.exists("/usr/bin/chromium-browser"): options.binary_location = "/usr/bin/chromium-browser"
+        elif os.path.exists("/usr/bin/chromium"): options.binary_location = "/usr/bin/chromium"
         driver = webdriver.Chrome(options=options)
     else:
         driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-        
-    ny_coordinates = {"latitude": 40.7128, "longitude": -74.0060, "accuracy": 100}
-    driver.execute_cdp_cmd("Emulation.setGeolocationOverride", ny_coordinates)
     return driver
 
 def wait_for_new_csv(download_dir, before_files, timeout=120):
     end_time = time.time() + timeout
     while time.time() < end_time:
         current_files = set(os.listdir(download_dir))
-        new_files = current_files - before_files
-        new_csvs = [f for f in new_files if f.endswith('.csv')]
-        active_downloads = [f for f in new_files if f.endswith('.crdownload') or f.endswith('.tmp')]
-        if new_csvs and not active_downloads:
-            time.sleep(2)
-            return os.path.join(download_dir, new_csvs[0])
+        new_csvs = [f for f in (current_files - before_files) if f.endswith('.csv')]
+        if new_csvs: return os.path.join(download_dir, new_csvs[0])
         time.sleep(1)
     return None
 
@@ -179,110 +136,44 @@ def login(driver, wait):
     driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
     wait.until(EC.presence_of_element_located((By.ID, "password"))).send_keys(PASSWORD)
     driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
-    time.sleep(5) 
-    try:
-        oust_btn = driver.find_element(By.XPATH, "//button[contains(text(), 'Yes, oust them!')]")
-        driver.execute_script("arguments[0].click();", oust_btn)
-    except:
-        pass
+    time.sleep(4)
+    try: driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//button[contains(text(), 'Yes, oust them!')]"))
+    except: pass
     wait.until(EC.presence_of_element_located((By.LINK_TEXT, "Advanced Search")))
 
 def open_analytics(driver, wait):
     main_window = driver.current_window_handle
-    btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".analytics-icon")))
-    driver.execute_script("arguments[0].click();", btn)
+    driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".analytics-icon"))))
     wait.until(EC.new_window_is_opened([main_window]))
-    new_window = [w for w in driver.window_handles if w != main_window][0]
-    driver.switch_to.window(new_window)
+    driver.switch_to.window([w for w in driver.window_handles if w != main_window][0])
     WebDriverWait(driver, 60).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
 
 def navigate_scheduled_visits(driver, wait):
-    long_wait = WebDriverWait(driver, 60)
-    short_wait = WebDriverWait(driver, 15)
-    page_loaded = False
-
-    for attempt in range(3):
-        try:
-            reports_menu = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, "//div[@id='REPORTS'] | //div[text()='REPORTS']")))
-            driver.execute_script("arguments[0].click();", reports_menu)
-            time.sleep(1.5)
-            sv_link = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//div[@id='scheduled_visits']//span[text()='Scheduled Visits'] | //div[@id='scheduled_visits']")))
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", sv_link)
-            time.sleep(0.5)
-            driver.execute_script("arguments[0].click();", sv_link)
-            short_wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".k-grid, #reportContainer, #OptionsBtn")))
-            page_loaded = True
-            break
-        except:
-            pass
-            
-    if not page_loaded:
-        raise Exception("Failed to sync structural elements inside Scheduled Visits layout.")
-
-    try:
-        long_wait.until_not(EC.presence_of_element_located((By.CSS_SELECTOR, ".k-loading-mask, .blockUI, .progress-indicator")))
-    except:
-        pass
-
-    options_btn = None
-    try:
-        options_btn = WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.ID, "OptionsBtn")))
-    except:
-        iframes = driver.find_elements(By.TAG_NAME, "iframe")
-        for iframe in iframes:
-            try:
-                driver.switch_to.frame(iframe)
-                options_btn = WebDriverWait(driver, 15).until(EC.element_to_be_clickable((By.ID, "OptionsBtn")))
-                break
-            except:
-                driver.switch_to.default_content()
-
-    if not options_btn:
-        raise Exception("Options UI overlay failed to target structural selectors.")
-
+    WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.XPATH, "//div[@id='REPORTS'] | //div[text()='REPORTS']"))).click()
+    time.sleep(1)
+    sv = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.XPATH, "//div[@id='scheduled_visits']")))
+    driver.execute_script("arguments[0].click();", sv)
+    options_btn = WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.ID, "OptionsBtn")))
     driver.execute_script("arguments[0].click();", options_btn)
-    time.sleep(2)
-
-    try:
-        mark_all_span = driver.find_element(By.XPATH, "//span[text()='(All)']")
-        driver.execute_script("arguments[0].click();", mark_all_span)
-        time.sleep(1)
-        driver.execute_script("arguments[0].click();", mark_all_span)
-    except:
-        pass
-
+    time.sleep(1)
     required_columns = ["Clinic Name", "Patient Name", "Patient ID", "Treating Therapist", "Appointment Type", "Appointment Date", "Visit Status"]
     for col in required_columns:
-        try:
-            cb = driver.find_element(By.XPATH, f"//span[text()='{col}']/preceding-sibling::input | //label[contains(., '{col}')]//input")
-            driver.execute_script("arguments[0].click();", cb)
-        except:
-            pass
-
-    apply_btn = driver.find_element(By.XPATH, "//button[contains(text(),'Apply')] | //*[@id='lblLayoutOk']")
-    driver.execute_script("arguments[0].click();", apply_btn)
-    time.sleep(3)
-
-    today = datetime.now()
-    end_date = "12/31/2060"
-    start_date = (today - timedelta(days=3)).strftime("%m/%d/%Y") if today.weekday() == 0 else (today - timedelta(days=1)).strftime("%m/%d/%Y")
-
+        try: driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, f"//span[text()='{col}']/preceding-sibling::input"))
+        except: pass
+    driver.find_element(By.XPATH, "//button[contains(text(),'Apply')] | //*[@id='lblLayoutOk']").click()
+    time.sleep(2)
+    start_date = (datetime.now() - timedelta(days=3 if datetime.now().weekday() == 0 else 1)).strftime("%m/%d/%Y")
     try:
         driver.execute_script(f"if(document.getElementById('inpDateStart')) document.getElementById('inpDateStart').value = '{start_date}';")
-        driver.execute_script(f"if(document.getElementById('inpDateEnd')) document.getElementById('inpDateEnd').value = '{end_date}';")
-        apply_date = driver.find_element(By.ID, "btnApplyDateFilter")
-        driver.execute_script("arguments[0].click();", apply_date)
-    except:
-        pass
-    time.sleep(5)
-
+        driver.execute_script("if(document.getElementById('inpDateEnd')) document.getElementById('inpDateEnd').value = '12/31/2060';")
+        driver.find_element(By.ID, "btnApplyDateFilter").click()
+    except: pass
+    time.sleep(4)
     before_files = set(os.listdir(DOWNLOAD_PATH))
-    export_btn = wait.until(EC.element_to_be_clickable((By.ID, "ExportDataBtn")))
-    driver.execute_script("arguments[0].click();", export_btn)
-    csv_opt = wait.until(EC.element_to_be_clickable((By.XPATH, "//*[text()='CSV']")))
-    driver.execute_script("arguments[0].click();", csv_opt)
-    
+    driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.ID, "ExportDataBtn"))))
+    driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.XPATH, "//*[text()='CSV']"))))
     return wait_for_new_csv(DOWNLOAD_PATH, before_files)
+
 
 # =====================================================================
 # STREAMLIT USER INTERFACE FORM CONTROLS
@@ -291,22 +182,15 @@ available_agents = sync_processor.get_valid_agents()
 
 with st.form("automation_form"):
     st.subheader("📋 Step 1: Select Active Assignment Team")
-    
-    # 🔥 NEW: Multi-select block handles agent allocation safely on-screen
     chosen_agents = st.multiselect(
-        "Select working agents for today's data distribution (Workload will split evenly across them):",
+        "Select working agents for today's data distribution:",
         options=available_agents,
         default=[]
     )
-    
-    st.info("System will run the scraping engine context securely upon validation submission.")
     submit = st.form_submit_button("🚀 Launch Scraper & Sheet Sync Pipeline")
 
 if submit:
-    if not chosen_agents:
-        st.warning("⚠️ You haven't chosen any agents! The target rows will be pushed with blank agent assignment fields.")
-        
-    status_box = st.status("Initializing Background Server Tasks...", expanded=True)
+    status_box = st.status("Connecting to Google Sheets for structural pre-check...", expanded=True)
     log_container = status_box.empty()
     
     streamlit_handler = StreamlitLogHandler(log_container)
@@ -315,37 +199,37 @@ if submit:
     stream_handler = logging.StreamHandler(streamlit_handler)
     root_logger.addHandler(stream_handler)
     
-    driver = None
     try:
-        driver = create_driver()
-        wait = WebDriverWait(driver, WAIT_TIMEOUT)
+        # 🌟 STEP 1: Read Google sheet BEFORE running WebPT extract
+        sync_needed, matched_rows = sync_processor.check_if_sync_needed()
         
-        login(driver, wait)
-        open_analytics(driver, wait)
-        raw_csv = navigate_scheduled_visits(driver, wait)
-        
-        if raw_csv:
-            final_csv = process_downloaded_data(raw_csv)
-            if final_csv:
-                # Passing the chosen UI list straight to processor loop
-                sync_success = sync_processor.sync_data_to_google_sheets(final_csv, selected_agents=chosen_agents)
-                if sync_success:
-                    status_box.update(label="🎉 Process & Google Sheets Sync Completed Successfully!", state="complete", expanded=False)
-                    st.success("The operations pipeline and Google Sheets synchronization completed cleanly.")
-                else:
-                    status_box.update(label="⚠️ WebPT Scraped, but Google Sheets Sync Failed", state="error", expanded=True)
-                
-                with open(final_csv, "rb") as file:
-                    st.download_button(
-                        label="📥 Download Cleaned CSV File",
-                        data=file,
-                        file_name=os.path.basename(final_csv),
-                        mime="text/csv"
-                    )
+        if not sync_needed:
+            status_box.update(label="✅ Sheet Already Up To Date. No extraction needed!", state="complete", expanded=True)
+            st.success("The Approval worksheet is completely up-to-date with yesterday's approved records. WebPT scraper process skipped safely.")
         else:
-            status_box.update(label="❌ Automation script execution halted.", state="error")
-            st.error("No file was recovered from the pipeline.")
+            # 🌟 STEP 2: Only run webpt extraction if rows are missing
+            st.info("New entries detected! Initializing WebPT headless interface processing...")
             
+            driver = create_driver()
+            wait = WebDriverWait(driver, WAIT_TIMEOUT)
+            
+            login(driver, wait)
+            open_analytics(driver, wait)
+            raw_csv = navigate_scheduled_visits(driver, wait)
+            
+            if raw_csv:
+                final_csv = process_downloaded_data(raw_csv)
+                if final_csv:
+                    sync_success = sync_processor.sync_data_to_google_sheets(final_csv, matched_rows, selected_agents=chosen_agents)
+                    if sync_success:
+                        status_box.update(label="🎉 Process & Google Sheets Sync Completed Successfully!", state="complete", expanded=False)
+                        st.success("Synchronization finished smoothly.")
+                    else:
+                        status_box.update(label="⚠️ WebPT Scraped, but Google Sheets Sync Failed", state="error", expanded=True)
+            else:
+                st.error("No CSV was recovered from the pipeline execution matrix.")
+                status_box.update(label="❌ Automation script execution halted.", state="error")
+                
     except Exception as e:
         status_box.update(label="💥 Runtime Exception Encountered", state="error")
         st.error(f"Execution Error: {e}")
@@ -355,5 +239,5 @@ if submit:
     finally:
         root_logger.removeHandler(stream_handler)
         sys.stdout = sys.__stdout__
-        if driver:
+        if 'driver' in locals() and driver:
             driver.quit()
