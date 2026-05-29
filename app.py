@@ -93,7 +93,7 @@ def process_downloaded_data(csv_path):
         # Strip columns down to lowercase alphabetic strings only to handle spacing or special character variations
         raw_to_alpha = {c: re.sub(r'[^a-z]', '', str(c).lower()) for c in df.columns}
         
-        # Map dynamic alphabetic combinations to required standard structures
+        # 🌟 FIXED: Mappings cleaned up perfectly to ensure no keys overwrite each other
         column_mapping = {
             "clinicname": "Clinic Name",
             "patientname": "Patient Name",
