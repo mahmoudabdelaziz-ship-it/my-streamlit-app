@@ -85,19 +85,29 @@ def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, 
     return plugin_path
 
 def process_downloaded_data(csv_path):
+    print("🧹 Cleaning and parsing WebPT CSV structures...")
     try:
         df = pd.read_csv(csv_path, encoding='utf-8')
-        df = df.map(lambda x: x.replace('\u201a', ',').replace('â€š', ',') if isinstance(x, str) else x)
+        
+        # Fast vector selection instead of element-by-element dataset looping
+        for col in df.select_dtypes(include=['object']).columns:
+            df[col] = df[col].str.replace('\u201a', ',', regex=False).str.replace('â€š', ',', regex=False)
+            
         target_columns = ["Patient ID", "Patient Name", "Clinic Name", "Treating Therapist", "Appointment Type", "Appointment Date", "Visit Status"]
         df = df[target_columns]
+        
         excluded_clinics = {'Home Care', 'Sensory Freeway', 'PTOC - Telehealth', '[PTOC - Telehealth]'}
         df = df[~df["Clinic Name"].str.strip().isin(excluded_clinics)]
+        
         df["Appointment Date"] = pd.to_datetime(df["Appointment Date"], errors="coerce")
         df = df.sort_values(by=["Visit Status", "Appointment Date", "Clinic Name"], ascending=[True, True, True])
         df["Appointment Date"] = df["Appointment Date"].dt.strftime("%Y-%m-%d")
+        
         df.to_csv(csv_path, index=False, encoding='utf-8')
+        print("✨ CSV data structures cleaned successfully!")
         return csv_path
     except Exception as e: 
+        print(f"❌ Failed to parse data rows: {e}")
         return None
 
 def create_driver() -> webdriver.Chrome:
@@ -119,7 +129,7 @@ def create_driver() -> webdriver.Chrome:
         "download.default_directory": DOWNLOAD_PATH,
         "download.prompt_for_download": False,
         "download.directory_upgrade": True,
-        "safebrowsing.enabled": False  # Keeps Chrome from pausing downloads to ask if the CSV is "safe"
+        "safebrowsing.enabled": False
     }
     options.add_experimental_option("prefs", prefs)
     
@@ -140,7 +150,6 @@ def create_driver() -> webdriver.Chrome:
     else:
         driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     
-    # 🌟 CRITICAL FIX: Direct command override instructing headless Chrome to allow downloads
     driver.execute_cdp_cmd("Page.setDownloadBehavior", {
         "behavior": "allow",
         "downloadPath": DOWNLOAD_PATH
@@ -154,11 +163,7 @@ def wait_for_new_csv(download_dir, before_files, timeout=60):
     while time.time() < end_time:
         current_files = set(os.listdir(download_dir))
         new_files = current_files - before_files
-        
-        # Check for completed CSVs
         new_csvs = [f for f in new_files if f.endswith('.csv')]
-        
-        # Check if Chrome is still actively downloading the file (.crdownload)
         active_downloads = [f for f in new_files if f.endswith('.crdownload') or f.endswith('.tmp')]
         
         if new_csvs and not active_downloads: 
@@ -167,8 +172,6 @@ def wait_for_new_csv(download_dir, before_files, timeout=60):
             return target_file
             
         time.sleep(1.5)
-        
-    # Hard stop if time expires
     raise TimeoutError(f"WebPT initiated export, but no file arrived in {timeout} seconds.")
 
 def login(driver, wait):
