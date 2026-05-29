@@ -171,6 +171,9 @@ def process_downloaded_data(csv_path):
 def create_driver() -> webdriver.Chrome:
     step("Launching Native Headless Chrome via Secure Extension Routing")
     options = webdriver.ChromeOptions()
+    
+    # 🔥 CRITICAL EXTRA FLAGS FOR DEPLOYED LINUX ENVIRONMENTS
+    options.add_argument("--headless=new") # Run completely behind the scenes without a GUI
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
@@ -180,6 +183,7 @@ def create_driver() -> webdriver.Chrome:
     options.add_argument("--ignore-certificate-errors")
     options.add_argument("--allow-running-insecure-content")
     
+    # ... Rest of your existing create_driver() code stays exactly the same    
     prefs = {
         "download.default_directory": DOWNLOAD_PATH,
         "download.prompt_for_download": False,
