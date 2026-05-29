@@ -17,6 +17,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
+# Import the decoupled sync processor file
+import sync_processor
+
 # =====================================================================
 # STREAMLIT PAGE SETUP
 # =====================================================================
@@ -65,10 +68,8 @@ def fail(msg: str):
 WEBPT_URL     = "https://app.webpt.com"
 WAIT_TIMEOUT  = 20
 
-# Safe home directory fallback mapping
 DOWNLOAD_PATH = os.path.join(os.path.expanduser("~"), "Downloads")
 
-# 📂 CRITICAL LINUX FIX: Dynamic directory validation
 if not os.path.exists(DOWNLOAD_PATH):
     os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 
@@ -132,7 +133,7 @@ def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, 
     if not os.path.exists(folder_path):
         os.makedirs(folder_path)
         
-    plugin_path = os.path.join(folder_path, f"proxy_auth_plugin.zip")
+    plugin_path = os.path.join(folder_path, "proxy_auth_plugin.zip")
     with zipfile.ZipFile(plugin_path, 'w') as zp:
         zp.writestr("manifest.json", manifest_json)
         zp.writestr("background.js", background_js)
@@ -142,7 +143,6 @@ def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, 
 # =====================================================================
 # CORE AUTOMATION LOGIC
 # =====================================================================
-
 def process_downloaded_data(csv_path):
     step("Processing CSV Data with Pandas")
     try:
@@ -152,12 +152,17 @@ def process_downloaded_data(csv_path):
 
         target_columns = ["Patient ID", "Patient Name", "Clinic Name", "Treating Therapist", "Appointment Type", "Appointment Date", "Visit Status"]
         df = df[target_columns]
+        
+        excluded_clinics = {'Home Care', 'Sensory Freeway', 'PTOC - Telehealth', '[PTOC - Telehealth]'}
+        df = df[~df["Clinic Name"].str.strip().isin(excluded_clinics)]
+        ok("Filtered and deleted excluded clinics from the CSV file download context")
+
         df["Appointment Date"] = pd.to_datetime(df["Appointment Date"], errors="coerce")
         df = df.sort_values(by=["Visit Status", "Appointment Date", "Clinic Name"], ascending=[True, True, True])
         df["Appointment Date"] = df["Appointment Date"].dt.strftime("%Y-%m-%d")
 
         df.to_csv(csv_path, index=False, encoding='utf-8')
-        ok(f"File processed and overwritten successfully")
+        ok("File processed and overwritten successfully")
         return csv_path
     except Exception as e:
         fail(f"Pandas processing failed: {e}")
@@ -166,14 +171,12 @@ def process_downloaded_data(csv_path):
 def create_driver() -> webdriver.Chrome:
     step("Launching Native Headless Chrome via Secure Extension Routing")
     options = webdriver.ChromeOptions()
-    options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--start-maximized")
     options.add_argument("--disable-notifications")
     options.add_argument("--disable-popup-blocking") 
-    
     options.add_argument("--ignore-certificate-errors")
     options.add_argument("--allow-running-insecure-content")
     
@@ -187,7 +190,7 @@ def create_driver() -> webdriver.Chrome:
     options.add_experimental_option("prefs", prefs)
     
     if USE_PROXY:
-        log.info(f"Injecting credential authentication parameters natively into Chrome context...")
+        log.info("Injecting credential authentication parameters natively into Chrome context...")
         try:
             host, port = PROXY_ENDPOINT.strip().split(":")
             plugin_file = create_proxy_auth_extension(
@@ -196,12 +199,10 @@ def create_driver() -> webdriver.Chrome:
                 proxy_user=PROXY_USER.strip(),
                 proxy_pass=PROXY_PASS.strip()
             )
-            # Updated to use extension parameter compatibility list wrapper
             options.add_argument(f'--load-extension={os.path.dirname(plugin_file)}')
         except Exception as proxy_err:
             log.error(f"Failed to load native proxy configuration details: {proxy_err}")
 
-    # Binary path evaluation block
     if os.name == 'posix': 
         if os.path.exists("/usr/bin/chromium-browser"):
             options.binary_location = "/usr/bin/chromium-browser"
@@ -217,7 +218,7 @@ def create_driver() -> webdriver.Chrome:
     return driver
 
 def wait_for_new_csv(download_dir, before_files, timeout=120):
-    log.info(f"Waiting for the server file transmission to complete...")
+    log.info("Waiting for the server file transmission to complete...")
     end_time = time.time() + timeout
     while time.time() < end_time:
         current_files = set(os.listdir(download_dir))
@@ -235,10 +236,13 @@ def wait_for_new_csv(download_dir, before_files, timeout=120):
 def login(driver, wait):
     step("Logging in to WebPT")
     driver.get(WEBPT_URL)
+    
     wait.until(EC.presence_of_element_located((By.ID, "username"))).send_keys(USERNAME)
     driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
+    
     wait.until(EC.presence_of_element_located((By.ID, "password"))).send_keys(PASSWORD)
     driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
+    
     time.sleep(5) 
     try:
         oust_btn = driver.find_element(By.XPATH, "//button[contains(text(), 'Yes, oust them!')]")
@@ -246,6 +250,7 @@ def login(driver, wait):
         ok("Handled multiple session 'Oust' validation checkpoint.")
     except:
         pass
+        
     wait.until(EC.presence_of_element_located((By.LINK_TEXT, "Advanced Search")))
     ok("Login credentials accepted!")
 
@@ -382,8 +387,13 @@ if submit:
         if raw_csv:
             final_csv = process_downloaded_data(raw_csv)
             if final_csv:
-                status_box.update(label="🎉 Process Completed Successfully!", state="complete", expanded=False)
-                st.success("The operations pipeline completed cleanly.")
+                sync_success = sync_processor.sync_data_to_google_sheets(final_csv)
+                if sync_success:
+                    status_box.update(label="🎉 Process & Google Sheets Sync Completed Successfully!", state="complete", expanded=False)
+                    st.success("The operations pipeline and Google Sheets synchronization completed cleanly.")
+                else:
+                    status_box.update(label="⚠️ WebPT Scraped, but Google Sheets Sync Failed", state="error", expanded=True)
+                    st.warning("WebPT extraction was successful, but the Google Sheets sync failed. Please check the log details above.")
                 
                 with open(final_csv, "rb") as file:
                     st.download_button(
