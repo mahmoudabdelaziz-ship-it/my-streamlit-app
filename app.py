@@ -90,15 +90,14 @@ def process_downloaded_data(csv_path):
     try:
         df = pd.read_csv(csv_path, encoding='utf-8')
         
-        # 🌟 BULLETPROOF NORMALIZATION: Strip columns down to lowercase alphabetic strings only
+        # Strip columns down to lowercase alphabetic strings only to handle spacing or special character variations
         raw_to_alpha = {c: re.sub(r'[^a-z]', '', str(c).lower()) for c in df.columns}
         
-        # Map alpha strings directly to required standard structures
+        # Map dynamic alphabetic combinations to required standard structures
         column_mapping = {
             "clinicname": "Clinic Name",
             "patientname": "Patient Name",
             "patientid": "Patient ID",
-            "patientid": "Patient ID",  # Handles edge-case punctuation variations like Patient I'D
             "treatingtherapist": "Treating Therapist",
             "appointmenttype": "Appointment Type",
             "appttype": "Appointment Type",
