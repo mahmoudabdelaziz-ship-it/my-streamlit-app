@@ -41,7 +41,7 @@ def get_gspread_client():
     return gspread.authorize(creds)
 
 def get_valid_agents():
-    """Fetches the unique historic agent options from the Google Sheet to populate the UI dropdown."""
+    """Fetches the unique historic agent options directly from the Google Sheet."""
     try:
         client = get_gspread_client()
         agent_ss = client.open_by_key(AGENT_SHEET_ID)
@@ -52,8 +52,8 @@ def get_valid_agents():
             agents = list(set([r[7].strip() for r in existing_rows[1:] if len(r) > 7 and r[7].strip()]))
             return sorted(agents)
     except Exception as e:
-        pass
-    return ["Mazen", "Mohamed Elgendi", "Nada", "Mohamed Elsherif", "Omar Abdelaziz", "Rana", "Youssef", "Mostafa Kamal", "Philo"]
+        fail(f"Failed to fetch live agent pool names from Google Sheet: {e}")
+    return []
 
 def fetch_and_filter_main_rows(client):
     """Loads and filters main sheet entries matching criteria from yesterday."""
@@ -106,7 +106,7 @@ def get_existing_agent_keys(client):
     return existing_keys, approval_ws
 
 def check_if_sync_needed():
-    """Step 0: Pre-checks Google Sheets BEFORE running WebPT scraper."""
+    """Step 0: Runs verification before launching WebPT automation browser."""
     step("Pre-checking Google Sheets to see if execution is necessary...")
     try:
         client = get_gspread_client()
@@ -131,13 +131,11 @@ def check_if_sync_needed():
         return True, []
 
 def sync_data_to_google_sheets(csv_path, matched_main_rows, selected_agents=None):
-    """Processes WebPT CSV using highly optimized Pandas mappings to prevent hangs."""
+    """Processes WebPT CSV using pre-verified data matrix frames."""
     step("Connecting to Google Sheets API to append final structured data")
     try:
         client = get_gspread_client()
-        if not matched_main_rows:
-            matched_main_rows = fetch_and_filter_main_rows(client)
-            
+        # FIX: Directly use the existing database data loaded from check_if_sync_needed to avoid hanging
         existing_keys, approval_ws = get_existing_agent_keys(client)
     except Exception as e:
         fail(f"Failed to access Google Sheets endpoints during update phase: {e}")
@@ -164,28 +162,23 @@ def sync_data_to_google_sheets(csv_path, matched_main_rows, selected_agents=None
     else:
         filtered_report_df = report_df.copy()
 
-    # 🌟 OPTIMIZATION: Convert the cross-match lookup from an O(N^2) loop to a fast O(1) Set Map
     upcoming_statuses = {"Checked-In", "Checked-Out", "Confirmed", "Other"}
     scheduled_patient_ids = set()
     
     if "Patient ID" in filtered_report_df.columns and "Visit Status" in filtered_report_df.columns:
-        # Filter down only rows that match our target statuses
-        active_scheds = filtered_report_df[filtered_report_df["Visit Status"].strip().isin(upcoming_statuses)]
-        # Clean IDs up and put them directly into a lightning-fast lookup set
+        active_scheds = filtered_report_df[filtered_report_df["Visit Status"].str.strip().isin(upcoming_statuses)]
         scheduled_patient_ids = set(active_scheds["Patient ID"].astype(str).str.strip().str.split('.').str[0].unique())
 
     group_upcoming = []
     group_no_upcoming = []
     today_stamp = datetime.now().strftime("%m/%d/%Y")
 
-    # This loop now runs instantly because the internal matching logic uses O(1) lookups
     for row in matched_main_rows:
         clinic = row[0].strip()       
         emr_id = row[1].strip()       
         patient_name = row[2].strip() 
         update_date = row[5].strip()  
         
-        # Check presence inside our pre-built hash set
         if emr_id in scheduled_patient_ids:
             new_row = [clinic, emr_id, patient_name, update_date, "Already Scheduled", "", "", "", today_stamp]
             if (emr_id, update_date) not in existing_keys:
@@ -197,7 +190,7 @@ def sync_data_to_google_sheets(csv_path, matched_main_rows, selected_agents=None
 
     total_working_count = len(group_no_upcoming)
     
-    # Process Workload Split
+    # Process Workload Split across UI designated agents
     if total_working_count > 0 and selected_agents:
         num_agents = len(selected_agents)
         base_share = total_working_count // num_agents
