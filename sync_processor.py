@@ -84,13 +84,31 @@ def sync_data_to_google_sheets(csv_path):
     try:
         import gspread
         from google.oauth2.service_account import Credentials
+        import streamlit as st  # <-- Import Streamlit to read secrets
     except ImportError:
         fail("Required Google Sheets libraries not installed. Please install gspread and google-auth.")
         return False
 
-    CREDENTIALS_PATH = r"c:\Users\COB\Downloads\d\Script Website\credentials.json"
+    try:
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        
+        # 🔥 FIX: Load credentials directly from Streamlit secure secrets dictionary
+        google_creds_dict = st.secrets["gcp_service_account"]
+        creds = Credentials.from_service_account_info(google_creds_dict, scopes=scopes)
+        
+        client = gspread.authorize(creds)
+        ok("Authenticated successfully with Google service account")
+    except Exception as e:
+        fail(f"Failed to authenticate with Google: {e}")
+        return False
+
     MAIN_SHEET_ID = "1VVM9vExR_4xUN0dp25IF7PiKlTqKTEj-EZ8IwqYn5RA"
     AGENT_SHEET_ID = "1LgPyUHsxZMioLIOgNRk2IgQOEEU70cHA45fUtoCed6c"
+    
+    # ... The rest of your sync_processor.py code continues exactly as before ...
     
     if not os.path.exists(CREDENTIALS_PATH):
         fail(f"Google credentials file not found at: {CREDENTIALS_PATH}")
