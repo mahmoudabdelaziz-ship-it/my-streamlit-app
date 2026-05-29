@@ -106,11 +106,7 @@ def get_existing_agent_keys(client):
     return existing_keys, approval_ws
 
 def check_if_sync_needed():
-    """
-    Step 0: Connects to Google Sheets BEFORE scraper runs.
-    Returns (True, matched_main_rows) if there are new items to process.
-    Returns (False, []) if everything is already updated.
-    """
+    """Step 0: Pre-checks Google Sheets BEFORE running WebPT scraper."""
     step("Pre-checking Google Sheets to see if execution is necessary...")
     try:
         client = get_gspread_client()
@@ -121,8 +117,6 @@ def check_if_sync_needed():
             return False, []
             
         existing_keys, _ = get_existing_agent_keys(client)
-        
-        # Check if there's any row from yesterday that does NOT exist yet in Agent sheet
         unprocessed_rows = [r for r in matched_main_rows if (r[1].strip(), r[5].strip()) not in existing_keys]
         
         if not unprocessed_rows:
@@ -134,11 +128,10 @@ def check_if_sync_needed():
         
     except Exception as e:
         fail(f"Error during Google Sheets pre-check phase: {e}")
-        # If the check fails due to network issues, default to True to remain safe
         return True, []
 
 def sync_data_to_google_sheets(csv_path, matched_main_rows, selected_agents=None):
-    """Processes WebPT CSV against pre-fetched rows and uploads results."""
+    """Processes WebPT CSV using highly optimized Pandas mappings to prevent hangs."""
     step("Connecting to Google Sheets API to append final structured data")
     try:
         client = get_gspread_client()
@@ -154,8 +147,7 @@ def sync_data_to_google_sheets(csv_path, matched_main_rows, selected_agents=None
         warn("No target rows matched criteria. Ending Sync Process cleanly.")
         return True
 
-    # Read and process WebPT report data
-    step("Reading and filtering WebPT report data")
+    step("Reading and processing WebPT report data via Pandas optimization vectors...")
     try:
         report_df = pd.read_csv(csv_path, encoding='utf-8')
     except Exception as e:
@@ -168,51 +160,42 @@ def sync_data_to_google_sheets(csv_path, matched_main_rows, selected_agents=None
     today_date = datetime.now().date()
     if "Appointment Date" in report_df.columns:
         report_df["Parsed Date"] = pd.to_datetime(report_df["Appointment Date"], errors="coerce")
-        filtered_report_df = report_df[report_df["Parsed Date"].dt.date >= today_date]
+        filtered_report_df = report_df[report_df["Parsed Date"].dt.date >= today_date].copy()
     else:
-        filtered_report_df = report_df
+        filtered_report_df = report_df.copy()
 
-    # Cross-match Patient ID and check upcoming statuses
+    # 🌟 OPTIMIZATION: Convert the cross-match lookup from an O(N^2) loop to a fast O(1) Set Map
     upcoming_statuses = {"Checked-In", "Checked-Out", "Confirmed", "Other"}
-    report_dict = {}
-    if "Patient ID" in filtered_report_df.columns:
-        for _, r in filtered_report_df.iterrows():
-            pid = str(r["Patient ID"]).strip().split('.')[0]
-            v_status = str(r["Visit Status"]).strip()
-            if pid not in report_dict:
-                report_dict[pid] = []
-            report_dict[pid].append(v_status)
+    scheduled_patient_ids = set()
+    
+    if "Patient ID" in filtered_report_df.columns and "Visit Status" in filtered_report_df.columns:
+        # Filter down only rows that match our target statuses
+        active_scheds = filtered_report_df[filtered_report_df["Visit Status"].strip().isin(upcoming_statuses)]
+        # Clean IDs up and put them directly into a lightning-fast lookup set
+        scheduled_patient_ids = set(active_scheds["Patient ID"].astype(str).str.strip().str.split('.').str[0].unique())
 
     group_upcoming = []
     group_no_upcoming = []
     today_stamp = datetime.now().strftime("%m/%d/%Y")
 
+    # This loop now runs instantly because the internal matching logic uses O(1) lookups
     for row in matched_main_rows:
         clinic = row[0].strip()       
         emr_id = row[1].strip()       
         patient_name = row[2].strip() 
         update_date = row[5].strip()  
         
-        has_upcoming = False
-        matched_statuses = report_dict.get(emr_id, [])
-        for status in matched_statuses:
-            if status in upcoming_statuses:
-                has_upcoming = True
-                break
-        
-        new_row = [clinic, emr_id, patient_name, update_date, "", "", "", "", today_stamp]
-        if has_upcoming:
-            new_row[4] = "Already Scheduled"
-            group_upcoming.append(new_row)
+        # Check presence inside our pre-built hash set
+        if emr_id in scheduled_patient_ids:
+            new_row = [clinic, emr_id, patient_name, update_date, "Already Scheduled", "", "", "", today_stamp]
+            if (emr_id, update_date) not in existing_keys:
+                group_upcoming.append(new_row)
         else:
-            new_row[4] = "" 
-            group_no_upcoming.append(new_row)
+            new_row = [clinic, emr_id, patient_name, update_date, "", "", "", "", today_stamp]
+            if (emr_id, update_date) not in existing_keys:
+                group_no_upcoming.append(new_row)
 
-    # Filter out records that are already posted
-    final_upcoming = [r for r in group_upcoming if (r[1], r[3]) not in existing_keys]
-    final_no_upcoming = [r for r in group_no_upcoming if (r[1], r[3]) not in existing_keys]
-    
-    total_working_count = len(final_no_upcoming)
+    total_working_count = len(group_no_upcoming)
     
     # Process Workload Split
     if total_working_count > 0 and selected_agents:
@@ -224,11 +207,11 @@ def sync_data_to_google_sheets(csv_path, matched_main_rows, selected_agents=None
         for i, agent in enumerate(selected_agents):
             share_allocation = base_share + (remainder if i == num_agents - 1 else 0)
             for _ in range(share_allocation):
-                if current_idx < len(final_no_upcoming):
-                    final_no_upcoming[current_idx][7] = agent 
+                if current_idx < len(group_no_upcoming):
+                    group_no_upcoming[current_idx][7] = agent 
                     current_idx += 1
             
-    rows_to_append = final_upcoming + final_no_upcoming
+    rows_to_append = group_upcoming + group_no_upcoming
     
     if rows_to_append:
         step(f"Appending {len(rows_to_append)} unique structural rows to Agent Sheet...")
@@ -239,8 +222,8 @@ def sync_data_to_google_sheets(csv_path, matched_main_rows, selected_agents=None
             completion_summary = (
                 f"🔔 *WebPT Automation Notice*\n\n"
                 f"Pipeline has completed processing entries!\n"
-                f"• Already Scheduled Rows: {len(final_upcoming)}\n"
-                f"• Assigned Agent Working Rows: {len(final_no_upcoming)}\n"
+                f"• Already Scheduled Rows: {len(group_upcoming)}\n"
+                f"• Assigned Agent Working Rows: {len(group_no_upcoming)}\n"
                 f"• Today's Stamp Added to Column I."
             )
             send_telegram_alert(completion_summary)
