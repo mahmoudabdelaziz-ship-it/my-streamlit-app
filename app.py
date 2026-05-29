@@ -70,11 +70,14 @@ except Exception as e:
     PASSWORD      = "CityPT10$"
     USE_PROXY     = False
 
-# [Functions create_proxy_auth_extension, process_downloaded_data, create_driver, wait_for_new_csv, login, open_analytics, navigate_scheduled_visits go here...]
+# =====================================================================
+# UTILITY AND SELENIUM PIPELINE FUNCTIONS
+# =====================================================================
 def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, folder_path="/tmp"):
     manifest_json = '{"version": "1.0.0", "manifest_version": 3, "name": "Chrome Proxy Auth Extension", "permissions": ["proxy", "tabs", "unlimitedStorage", "storage", "<all_urls>", "webRequest", "webRequestAuthProvider"], "background": { "service_worker": "background.js" }}'
     background_js = f'var config = {{ mode: "fixed_servers", rules: {{ singleProxy: {{ scheme: "http", host: "{proxy_host}", port: parseInt({proxy_port}) }}, bypassList: [] }} }}; chrome.proxy.settings.set({{value: config, scope: "regular"}}, function({{}}); chrome.webRequest.onAuthRequired.addListener(function(details) {{ return {{ authCredentials: {{ username: "{proxy_user}", password: "{proxy_pass}" }} }}; }}, {{urls: ["<all_urls>"]}}, ["blocking"]);'
-    if not os.path.exists(folder_path): os.makedirs(folder_path)
+    if not os.path.exists(folder_path): 
+        os.makedirs(folder_path)
     plugin_path = os.path.join(folder_path, "proxy_auth_plugin.zip")
     with zipfile.ZipFile(plugin_path, 'w') as zp:
         zp.writestr("manifest.json", manifest_json)
@@ -94,7 +97,8 @@ def process_downloaded_data(csv_path):
         df["Appointment Date"] = df["Appointment Date"].dt.strftime("%Y-%m-%d")
         df.to_csv(csv_path, index=False, encoding='utf-8')
         return csv_path
-    except: return None
+    except Exception as e: 
+        return None
 
 def create_driver() -> webdriver.Chrome:
     options = webdriver.ChromeOptions()
@@ -112,10 +116,13 @@ def create_driver() -> webdriver.Chrome:
             host, port = PROXY_ENDPOINT.strip().split(":")
             plugin_file = create_proxy_auth_extension(host, port, PROXY_USER.strip(), PROXY_PASS.strip())
             options.add_argument(f'--load-extension={os.path.dirname(plugin_file)}')
-        except: pass
+        except: 
+            pass
     if os.name == 'posix':
-        if os.path.exists("/usr/bin/chromium-browser"): options.binary_location = "/usr/bin/chromium-browser"
-        elif os.path.exists("/usr/bin/chromium"): options.binary_location = "/usr/bin/chromium"
+        if os.path.exists("/usr/bin/chromium-browser"): 
+            options.binary_location = "/usr/bin/chromium-browser"
+        elif os.path.exists("/usr/bin/chromium"): 
+            options.binary_location = "/usr/bin/chromium"
         driver = webdriver.Chrome(options=options)
     else:
         driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
@@ -126,7 +133,8 @@ def wait_for_new_csv(download_dir, before_files, timeout=120):
     while time.time() < end_time:
         current_files = set(os.listdir(download_dir))
         new_csvs = [f for f in (current_files - before_files) if f.endswith('.csv')]
-        if new_csvs: return os.path.join(download_dir, new_csvs[0])
+        if new_csvs: 
+            return os.path.join(download_dir, new_csvs[0])
         time.sleep(1)
     return None
 
@@ -137,8 +145,10 @@ def login(driver, wait):
     wait.until(EC.presence_of_element_located((By.ID, "password"))).send_keys(PASSWORD)
     driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
     time.sleep(4)
-    try: driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//button[contains(text(), 'Yes, oust them!')]"))
-    except: pass
+    try: 
+        driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//button[contains(text(), 'Yes, oust them!')]"))
+    except: 
+        pass
     wait.until(EC.presence_of_element_located((By.LINK_TEXT, "Advanced Search")))
 
 def open_analytics(driver, wait):
@@ -156,19 +166,32 @@ def navigate_scheduled_visits(driver, wait):
     options_btn = WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.ID, "OptionsBtn")))
     driver.execute_script("arguments[0].click();", options_btn)
     time.sleep(1)
+    
     required_columns = ["Clinic Name", "Patient Name", "Patient ID", "Treating Therapist", "Appointment Type", "Appointment Date", "Visit Status"]
     for col in required_columns:
-        try: driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, f"//span[text()='{col}']/preceding-sibling::input"))
-        except: pass
-    driver.find_element(By.XPATH, "//button[contains(text(),'Apply')] | //*[@id='lblLayoutOk']").click()
+        try: 
+            driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, f"//span[text()='{col}']/preceding-sibling::input"))
+        except: 
+            pass
+            
+    # =====================================================================
+    # FIXED: JavaScript execution injection to bypass Terms Interception
+    # =====================================================================
+    apply_btn = driver.find_element(By.XPATH, "//button[contains(text(),'Apply')] | //*[@id='lblLayoutOk']")
+    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", apply_btn)
+    time.sleep(0.5)
+    driver.execute_script("arguments[0].click();", apply_btn)
     time.sleep(2)
+    
     start_date = (datetime.now() - timedelta(days=3 if datetime.now().weekday() == 0 else 1)).strftime("%m/%d/%Y")
     try:
         driver.execute_script(f"if(document.getElementById('inpDateStart')) document.getElementById('inpDateStart').value = '{start_date}';")
         driver.execute_script("if(document.getElementById('inpDateEnd')) document.getElementById('inpDateEnd').value = '12/31/2060';")
         driver.find_element(By.ID, "btnApplyDateFilter").click()
-    except: pass
+    except: 
+        pass
     time.sleep(4)
+    
     before_files = set(os.listdir(DOWNLOAD_PATH))
     driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.ID, "ExportDataBtn"))))
     driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.XPATH, "//*[text()='CSV']"))))
@@ -199,15 +222,16 @@ if submit:
     stream_handler = logging.StreamHandler(streamlit_handler)
     root_logger.addHandler(stream_handler)
     
+    driver = None
     try:
-        # 🌟 STEP 1: Read Google sheet BEFORE running WebPT extract
+        # STEP 1: Connect and check Google Sheet BEFORE running WebPT extraction logic
         sync_needed, matched_rows = sync_processor.check_if_sync_needed()
         
         if not sync_needed:
             status_box.update(label="✅ Sheet Already Up To Date. No extraction needed!", state="complete", expanded=True)
             st.success("The Approval worksheet is completely up-to-date with yesterday's approved records. WebPT scraper process skipped safely.")
         else:
-            # 🌟 STEP 2: Only run webpt extraction if rows are missing
+            # STEP 2: Only spin up Selenium Chrome instance if new rows are verified missing
             st.info("New entries detected! Initializing WebPT headless interface processing...")
             
             driver = create_driver()
@@ -239,5 +263,5 @@ if submit:
     finally:
         root_logger.removeHandler(stream_handler)
         sys.stdout = sys.__stdout__
-        if 'driver' in locals() and driver:
+        if driver:
             driver.quit()
