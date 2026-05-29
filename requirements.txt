@@ -2,3 +2,6 @@ streamlit
 pandas
 selenium
 webdriver-manager
+requests
+gspread
+google-auth
