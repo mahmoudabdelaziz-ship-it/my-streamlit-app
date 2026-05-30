@@ -365,11 +365,10 @@ if submit:
     
     driver = None
     try:
-        # 🔥 CHANGED: Pre-check is used only to gather rows, not to exit early
         sync_needed, matched_rows = sync_processor.check_if_sync_needed()
         
         if not sync_needed:
-            st.info("ℹ️ Cloud approval tracking rows are currently up to date. Extracting WebPT report data anyway as requested...")
+            st.info("ℹ️ Cloud approval tracking rows are currently up to date. Extracting WebPT report data anyway...")
         else:
             st.info("🆕 Queued modifications detected. Initializing WebPT data extraction match...")
             
@@ -387,6 +386,16 @@ if submit:
                 if sync_success:
                     status_box.update(label="🎉 System task operations concluded perfectly!", state="complete", expanded=False)
                     st.success("🚀 Optimization logs compiled, WebPT report exported, and data alignment check completed successfully.")
+                    
+                    # 🔥 RESTORED: Local UI download feature exposes the cleaned CSV frame to user screen
+                    with open(final_csv, "rb") as file:
+                        st.download_button(
+                            label="📥 Download Cleaned WebPT Report CSV File",
+                            data=file,
+                            file_name=os.path.basename(final_csv),
+                            mime="text/csv",
+                            use_container_width=True
+                        )
                 else:
                     status_box.update(label="⚠️ Cloud Synchronization Failure", state="error", expanded=True)
         else:
