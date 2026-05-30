@@ -111,7 +111,7 @@ def process_downloaded_data(csv_path):
         df["Appointment Date"] = df["Appointment Date"].dt.strftime("%Y-%m-%d")
 
         df.to_csv(csv_path, index=False, encoding='utf-8')
-        print(f"✔ File processed and overwritten at: {csv_path}")
+        print("✔ File data structures cleaned successfully!")
         return csv_path
         
     except Exception as e:
@@ -119,7 +119,7 @@ def process_downloaded_data(csv_path):
         return None
 
 def create_driver() -> webdriver.Chrome:
-    print("▶ Launching Chrome browser")
+    print("▶ Launching Headless Scraping Engine")
     options = webdriver.ChromeOptions()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
@@ -164,11 +164,10 @@ def create_driver() -> webdriver.Chrome:
         "downloadPath": DOWNLOAD_PATH
     })
     
-    print("✔ Browser launched successfully")
     return driver
 
 def wait_for_new_csv(download_dir, before_files, timeout=120):
-    print("→ Waiting for the file to download...")
+    print("→ Waiting for the raw file export...")
     end_time = time.time() + timeout
     while time.time() < end_time:
         current_files = set(os.listdir(download_dir))
@@ -179,7 +178,6 @@ def wait_for_new_csv(download_dir, before_files, timeout=120):
         if new_csvs and not active_downloads: 
             time.sleep(2)
             file_name = new_csvs[0]
-            print(f"✔ Download complete: {file_name}")
             return os.path.join(download_dir, file_name)
             
         time.sleep(1)
@@ -187,7 +185,7 @@ def wait_for_new_csv(download_dir, before_files, timeout=120):
     return None
 
 def login(driver, wait):
-    print("▶ Logging in to WebPT")
+    print("▶ Authenticating with WebPT Gateway")
     driver.get(WEBPT_URL)
     
     wait.until(EC.presence_of_element_located((By.ID, "username"))).send_keys(USERNAME)
@@ -198,15 +196,12 @@ def login(driver, wait):
     try: 
         oust_btn = driver.find_element(By.XPATH, "//button[contains(text(), 'Yes, oust them!')]")
         driver.execute_script("arguments[0].click();", oust_btn)
-        print("✔ Clicked 'Yes, oust them!' button")
     except: 
-        print("No 'Oust' prompt appeared.")
+        pass
         
     wait.until(EC.presence_of_element_located((By.LINK_TEXT, "Advanced Search")))
-    print("✔ Login successful")
 
 def open_analytics(driver, wait):
-    print("▶ Opening Analytics tab")
     main_window = driver.current_window_handle
     btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".analytics-icon")))
     driver.execute_script("arguments[0].click();", btn)
@@ -214,32 +209,27 @@ def open_analytics(driver, wait):
     wait.until(EC.new_window_is_opened([main_window]))
     new_window = [w for w in driver.window_handles if w != main_window][0]
     driver.switch_to.window(new_window)
-    
     WebDriverWait(driver, 60).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-    print("✔ Switched to Analytics dashboard")
 
 def locate_options_button(driver):
     try:
         btn = WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.ID, "OptionsBtn")))
-        print("Options button found in main content")
         return btn
     except:
-        print("Options not in default content – checking iframes")
+        pass
 
     iframes = driver.find_elements(By.TAG_NAME, "iframe")
-    print(f"Found {len(iframes)} iframes")
     for idx, iframe in enumerate(iframes):
         try:
             driver.switch_to.frame(iframe)
             btn = WebDriverWait(driver, 15).until(EC.element_to_be_clickable((By.ID, "OptionsBtn")))
-            print(f"Found Options button inside iframe #{idx}")
             return btn
         except:
             driver.switch_to.default_content()
     return None
 
 def navigate_scheduled_visits(driver, wait):
-    print("▶ Navigating to Scheduled Visits Report")
+    print("▶ Fetching Scheduled Visits Report Grid")
     long_wait = WebDriverWait(driver, 60)
     short_wait = WebDriverWait(driver, 15)
     
@@ -247,7 +237,6 @@ def navigate_scheduled_visits(driver, wait):
     max_attempts = 3
 
     for attempt in range(max_attempts):
-        print(f"  → Attempt {attempt + 1} of {max_attempts} to click Scheduled Visits...")
         try:
             reports_menu = WebDriverWait(driver, 10).until(EC.element_to_be_clickable(
                 (By.XPATH, "//div[@id='REPORTS'] | //div[text()='REPORTS']")
@@ -265,42 +254,34 @@ def navigate_scheduled_visits(driver, wait):
             except:
                 driver.execute_script("arguments[0].click();", sv_link)
 
-            print("▶ Checking if the click registered...")
             short_wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".k-grid, #reportContainer, #OptionsBtn")))
-            print("✔ Confirmed: Scheduled Visits page is loading!")
             page_loaded = True
             break
         except:
-            print("⚠ The click didn't register or the page didn't load. Retrying...")
+            pass
             
     if not page_loaded:
         raise Exception("Failed to open the Scheduled Visits report after 3 attempts.")
         
-    print("▶ Waiting for background data to finish loading")
     try:
         long_wait.until_not(EC.presence_of_element_located((By.CSS_SELECTOR, ".k-loading-mask, .blockUI, .progress-indicator")))
-        print("✔ No active loading overlay")
     except:
         pass
         
-    print("▶ Looking for Options button")
     options_btn = locate_options_button(driver)
     if not options_btn:
         raise Exception("Could not locate the Options button (ID='OptionsBtn')")
         
-    print("✔ Options button located – opening column chooser")
     driver.execute_script("arguments[0].click();", options_btn)
     time.sleep(2)
     
-    print("▶ Clearing old selections")
     try:
         mark_all_span = driver.find_element(By.XPATH, "//span[text()='(All)']")
         driver.execute_script("arguments[0].click();", mark_all_span)
         time.sleep(1)
         driver.execute_script("arguments[0].click();", mark_all_span)
-        print("✔ Columns cleared")
     except:
-        print("⚠ Could not clear columns – continuing")
+        pass
         
     required_columns = [
         "Clinic Name", "Patient Name", "Patient ID",
@@ -313,33 +294,30 @@ def navigate_scheduled_visits(driver, wait):
             cb = driver.find_element(By.XPATH, xpath)
             driver.execute_script("arguments[0].click();", cb)
         except: 
-            print(f"⚠ Column '{col}' not found – possibly already selected")
+            pass
             
     apply_btn = driver.find_element(By.XPATH, "//button[contains(text(),'Apply')] | //*[@id='lblLayoutOk']")
     driver.execute_script("arguments[0].click();", apply_btn)
     time.sleep(3)
     
-    print("▶ Applying date filter")
+    print("▶ Applying Target Date Range Filter Rules")
     today = datetime.now()
     end_date = "12/31/2060"
     if today.weekday() == 0:
         start_date = (today - timedelta(days=3)).strftime("%m/%d/%Y")
-        print(f"Monday logic: Extracting from last Friday ({start_date}) through 2060.")
     else:
         start_date = (today - timedelta(days=1)).strftime("%m/%d/%Y")
-        print(f"Standard logic: Extracting from yesterday ({start_date}) through 2060.")
         
     try:
         driver.execute_script(f"if(document.getElementById('inpDateStart')) document.getElementById('inpDateStart').value = '{start_date}';")
         driver.execute_script(f"if(document.getElementById('inpDateEnd')) document.getElementById('inpDateEnd').value = '{end_date}';")
         apply_date = driver.find_element(By.ID, "btnApplyDateFilter")
         driver.execute_script("arguments[0].click();", apply_date)
-        print(f"✔ Date filter applied: {start_date} to {end_date}")
     except: 
-        print("⚠ Could not set date filter – manually check the report range")
+        pass
     time.sleep(5)
     
-    print("▶ Exporting to CSV")
+    print("▶ Executing Data Export Manifest Command")
     before_files = set(os.listdir(DOWNLOAD_PATH))
     export_btn = wait.until(EC.element_to_be_clickable((By.ID, "ExportDataBtn")))
     driver.execute_script("arguments[0].click();", export_btn)
@@ -396,15 +374,7 @@ if submit:
                     sync_success = sync_processor.sync_data_to_google_sheets(final_csv, matched_rows, selected_agents=chosen_agents)
                     if sync_success:
                         status_box.update(label="🎉 Process & Google Sheets Sync Completed Successfully!", state="complete", expanded=False)
-                        st.success("Synchronization finished smoothly.")
-                        
-                        with open(final_csv, "rb") as file:
-                            st.download_button(
-                                label="📥 Download Cleaned CSV File",
-                                data=file,
-                                file_name=os.path.basename(final_csv),
-                                mime="text/csv"
-                            )
+                        st.success("Synchronization finished smoothly and live telemetry dispatched.")
                     else:
                         status_box.update(label="⚠️ WebPT Scraped, but Google Sheets Sync Failed", state="error", expanded=True)
             else:
