@@ -67,17 +67,14 @@ def fetch_and_filter_main_rows(client):
 
     main_data_rows = main_rows[1:]
     
-    # 🔥 NEW: Calculate target date ranges based on day of the week
     today = datetime.now()
     target_dates = set()
 
     if today.weekday() == 0:  # Monday
-        # Collect Friday (3 days ago), Saturday (2 days ago), and Sunday (1 day ago)
         for days_back in [1, 2, 3]:
             target_dates.add((today - timedelta(days=days_back)).date())
         step("Monday matching enabled: Scanning Main Sheet for entries from Friday, Saturday, and Sunday.")
     else:
-        # Standard lookback: just yesterday
         target_dates.add((today - timedelta(days=1)).date())
     
     matched_main_rows = []
@@ -101,7 +98,6 @@ def fetch_and_filter_main_rows(client):
             except ValueError:
                 pass
         
-        # 🔥 CHANGED: Check if the parsed row date is inside our calculated weekend/yesterday target dates set
         if parsed_date and parsed_date.date() in target_dates:
             if status_val.lower() in ["approved", "not required", "approved - not required"]:
                 matched_main_rows.append(row)
@@ -128,17 +124,18 @@ def check_if_sync_needed():
         matched_main_rows = fetch_and_filter_main_rows(client)
         
         if not matched_main_rows:
-            ok("No rows matched criteria for the target date window in Main Sheet. Execution skipped.")
+            ok("No rows matched criteria for the target date window in Main Sheet.")
             return False, []
             
         existing_keys, _ = get_existing_agent_keys(client)
         unprocessed_rows = [r for r in matched_main_rows if (r[1].strip(), r[5].strip()) not in existing_keys]
         
         if not unprocessed_rows:
-            ok("All records from the targeted weekend/yesterday range are already present in the Approval Sheet. Skipping WebPT Extraction entirely!")
-            return False, []
+            # 🔥 CHANGED: Returns True for row list so app has access to them, but flags False for sheet sync necessity
+            ok("All records from the targeted window are already present in the Approval Sheet.")
+            return False, matched_main_rows
             
-        ok(f"Found {len(unprocessed_rows)} unprocessed rows. Proceeding with WebPT extraction.")
+        ok(f"Found {len(unprocessed_rows)} unprocessed rows.")
         return True, matched_main_rows
         
     except Exception as e:
@@ -237,6 +234,7 @@ def sync_data_to_google_sheets(csv_path, matched_main_rows, selected_agents=None
             fail(f"Failed to push rows to Google Sheets endpoint: {e}")
             return False
     else:
-        ok("All processed rows already exist in the Agent Sheet.")
+        # 🔥 CHANGED: Safe confirmation if no new rows needed appending
+        ok("All processed target rows already exist in the Agent Sheet. No new entries required insertion.")
 
     return True
