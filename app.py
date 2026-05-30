@@ -87,29 +87,22 @@ def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, 
 def process_downloaded_data(csv_path):
     print("🧹 Cleaning and parsing WebPT CSV structures...")
     try:
-        # Load data using 'utf-8-sig' encoding to automatically catch hidden BOM marks if present
         df = pd.read_csv(csv_path, encoding='utf-8-sig')
-        
-        # Log parsed columns for visibility during errors
         print(f"📋 Raw CSV Columns Extracted: {list(df.columns)}")
         
-        # Clean every cell: replace corrupt character (U+201A) and literal 'â€š' with normal comma
         df = df.map(
             lambda x: x.replace('\u201a', ',').replace('â€š', ',').strip()
             if isinstance(x, str) else x
         )
         
         rename_dict = {}
-        # Robust Substring Search Matching Loop
         for original_col in df.columns:
             cleaned = str(original_col).strip().lower()
             
             if "clinic" in cleaned and "name" in cleaned:
                 rename_dict[original_col] = "Clinic Name"
-            # Flexible condition matching for variations like 'Patient Name', 'Pt Name', 'Case Title', or just 'Patient'
             elif ("patient" in cleaned and "name" in cleaned) or ("pt" in cleaned and "name" in cleaned) or (cleaned == "patient") or ("case title" in cleaned):
                 rename_dict[original_col] = "Patient Name"
-            # Flexible condition matching for variations like 'Patient ID', 'Pt ID', 'MRN', 'Account', or 'EMR'
             elif ("patient" in cleaned and ("id" in cleaned or "mrn" in cleaned or "account" in cleaned or "emr" in cleaned)) or (cleaned in ["patient id", "pt id"]):
                 rename_dict[original_col] = "Patient ID"
             elif "therapist" in cleaned or "provider" in cleaned or "case therapist" in cleaned:
@@ -121,17 +114,14 @@ def process_downloaded_data(csv_path):
             elif "status" in cleaned or "attend" in cleaned:
                 rename_dict[original_col] = "Visit Status"
 
-        # Apply mapped label assignments
         df = df.rename(columns=rename_dict)
         
-        # Verify columns match standard structural pipeline criteria
         target_columns = ["Patient ID", "Patient Name", "Clinic Name", "Treating Therapist", "Appointment Type", "Appointment Date", "Visit Status"]
         for col in target_columns:
             if col not in df.columns:
                 print(f"⚠️ Column alignment missing: '{col}'. Generating default placeholder context.")
                 df[col] = "N/A"
                 
-        # Re-index to keep only required features
         df = df[target_columns]
             
         excluded_clinics = {'Home Care', 'Sensory Freeway', 'PTOC - Telehealth', '[PTOC - Telehealth]'}
@@ -315,7 +305,6 @@ def navigate_scheduled_visits(driver, wait):
     except:
         pass
         
-    # Standard labels corresponding directly with WebPT column headers
     webpt_ui_labels = ["Clinic Name", "Case Title", "Patient ID", "Case Therapist", "Start Time", "Likelihood to Attend"]
     for col in webpt_ui_labels:
         try: 
@@ -352,7 +341,6 @@ def navigate_scheduled_visits(driver, wait):
     driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.XPATH, "//*[text()='CSV']"))))
     
     return wait_for_new_csv(DOWNLOAD_PATH, before_files)
-
 
 # =====================================================================
 # STREAMLIT USER INTERFACE FORM CONTROLS
@@ -402,6 +390,14 @@ if submit:
                     if sync_success:
                         status_box.update(label="🎉 Process & Google Sheets Sync Completed Successfully!", state="complete", expanded=False)
                         st.success("Synchronization finished smoothly.")
+                        
+                        with open(final_csv, "rb") as file:
+                            st.download_button(
+                                label="📥 Download Cleaned CSV File",
+                                data=file,
+                                file_name=os.path.basename(final_csv),
+                                mime="text/csv"
+                            )
                     else:
                         status_box.update(label="⚠️ WebPT Scraped, but Google Sheets Sync Failed", state="error", expanded=True)
             else:
