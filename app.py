@@ -21,10 +21,19 @@ import sync_processor
 # =====================================================================
 # STREAMLIT PAGE SETUP
 # =====================================================================
-st.set_page_config(page_title="WebPT Automation Tool", page_icon="🤖", layout="centered")
+st.set_page_config(page_title="WebPT Automation Dashboard", page_icon="⚡", layout="centered")
 
-st.title("🤖 WebPT Automated Report Downloader & Assigner")
-st.write("Configure active agents and click run to execute the automated task pipeline.")
+# Custom CSS for a cleaner, modern interface
+st.markdown("""
+    <style>
+    .main-title { font-size: 2.2rem; font-weight: 700; color: #1E88E5; margin-bottom: 0.5rem; }
+    .sub-title { font-size: 1rem; color: #666; margin-bottom: 2rem; }
+    .step-header { font-size: 1.2rem; font-weight: 600; margin-top: 1rem; margin-bottom: 0.5rem; }
+    </style>
+""", unsafe_allow_html=True)
+
+st.markdown('<div class="main-title">⚡ WebPT Advanced Automation Dashboard</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-title">Streamlined report extractions, intelligent cross-matching, and automated team task distribution.</div>', unsafe_allow_html=True)
 
 # =====================================================================
 # LOGGING CONFIGURATION
@@ -85,16 +94,15 @@ def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, 
     return plugin_path
 
 def process_downloaded_data(csv_path):
-    print("▶ Processing CSV Data with Pandas")
+    print("🧹 [PANDAS] Starting CSV sanitation and transformation pipeline...")
     try:
         df = pd.read_csv(csv_path, encoding='utf-8')
 
-        # Clean every cell: replace corrupt character (U+201A) and literal 'â€š' with normal comma
         df = df.map(
             lambda x: x.replace('\u201a', ',').replace('â€š', ',')
             if isinstance(x, str) else x
         )
-        print("✔ Replaced all corrupted commas with regular commas")
+        print("✨ [PANDAS] Corrupted character string fragments successfully fixed.")
 
         target_columns = [
             "Patient ID", "Patient Name", "Clinic Name",
@@ -111,15 +119,15 @@ def process_downloaded_data(csv_path):
         df["Appointment Date"] = df["Appointment Date"].dt.strftime("%Y-%m-%d")
 
         df.to_csv(csv_path, index=False, encoding='utf-8')
-        print("✔ File data structures cleaned successfully!")
+        print("📊 [PANDAS] Final data frames cleaned and restructured efficiently.")
         return csv_path
         
     except Exception as e:
-        print(f"✖ Pandas processing failed: {e}")
+        print(f"❌ [PANDAS] Processing failed: {e}")
         return None
 
 def create_driver() -> webdriver.Chrome:
-    print("▶ Launching Headless Scraping Engine")
+    print("🌐 [BROWSER] Initializing headless Chrome automation engine...")
     options = webdriver.ChromeOptions()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
@@ -167,7 +175,7 @@ def create_driver() -> webdriver.Chrome:
     return driver
 
 def wait_for_new_csv(download_dir, before_files, timeout=120):
-    print("→ Waiting for the raw file export...")
+    print("⏳ [BROWSER] Awaiting secure file export handoff from cloud environment...")
     end_time = time.time() + timeout
     while time.time() < end_time:
         current_files = set(os.listdir(download_dir))
@@ -181,11 +189,11 @@ def wait_for_new_csv(download_dir, before_files, timeout=120):
             return os.path.join(download_dir, file_name)
             
         time.sleep(1)
-    print("⚠ Download timed out.")
+    print("⚠️ [BROWSER] Download pipeline handoff timed out.")
     return None
 
 def login(driver, wait):
-    print("▶ Authenticating with WebPT Gateway")
+    print("🔐 [BROWSER] Passing secure credentials to WebPT authentication portal...")
     driver.get(WEBPT_URL)
     
     wait.until(EC.presence_of_element_located((By.ID, "username"))).send_keys(USERNAME)
@@ -202,6 +210,7 @@ def login(driver, wait):
     wait.until(EC.presence_of_element_located((By.LINK_TEXT, "Advanced Search")))
 
 def open_analytics(driver, wait):
+    print("📊 [BROWSER] Spawning isolated Analytics engine process handle...")
     main_window = driver.current_window_handle
     btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".analytics-icon")))
     driver.execute_script("arguments[0].click();", btn)
@@ -229,7 +238,7 @@ def locate_options_button(driver):
     return None
 
 def navigate_scheduled_visits(driver, wait):
-    print("▶ Fetching Scheduled Visits Report Grid")
+    print("📂 [BROWSER] Navigating layout trees to locate Scheduled Visits Report...")
     long_wait = WebDriverWait(driver, 60)
     short_wait = WebDriverWait(driver, 15)
     
@@ -300,7 +309,7 @@ def navigate_scheduled_visits(driver, wait):
     driver.execute_script("arguments[0].click();", apply_btn)
     time.sleep(3)
     
-    print("▶ Applying Target Date Range Filter Rules")
+    print("📅 [BROWSER] Calibrating calendar filter ranges (Yesterday -> 2060)...")
     today = datetime.now()
     end_date = "12/31/2060"
     if today.weekday() == 0:
@@ -317,7 +326,7 @@ def navigate_scheduled_visits(driver, wait):
         pass
     time.sleep(5)
     
-    print("▶ Executing Data Export Manifest Command")
+    print("🚀 [BROWSER] Triggering native cloud data matrix export request...")
     before_files = set(os.listdir(DOWNLOAD_PATH))
     export_btn = wait.until(EC.element_to_be_clickable((By.ID, "ExportDataBtn")))
     driver.execute_script("arguments[0].click();", export_btn)
@@ -332,17 +341,22 @@ def navigate_scheduled_visits(driver, wait):
 # =====================================================================
 available_agents = sync_processor.get_valid_agents()
 
-with st.form("automation_form"):
-    st.subheader("📋 Step 1: Select Active Assignment Team")
+# Use a container card style for the main controls form
+with st.container(border=True):
+    st.markdown('<div class="step-header">👥 Step 1: Assign Active Team Members</div>', unsafe_allow_html=True)
     chosen_agents = st.multiselect(
-        "Select working agents for today's data distribution:",
+        "Choose who is working today to evenly distribute the active workload balance:",
         options=available_agents,
-        default=[]
+        default=[],
+        placeholder="Select team members..."
     )
-    submit = st.form_submit_button("🚀 Launch Scraper & Sheet Sync Pipeline")
+    
+    st.markdown('<div style="margin-top: 1.5rem;"></div>', unsafe_allow_html=True)
+    submit = st.button("🚀 Initialize Automation Pipeline", use_container_width=True, type="primary")
 
 if submit:
-    status_box = st.status("Connecting to Google Sheets for structural pre-check...", expanded=True)
+    st.markdown('<div class="step-header">⚙️ Live Pipeline Execution Console</div>', unsafe_allow_html=True)
+    status_box = st.status("Establishing handshake with Google Sheets database cluster...", expanded=True)
     log_container = status_box.empty()
     
     streamlit_handler = StreamlitLogHandler(log_container)
@@ -356,10 +370,10 @@ if submit:
         sync_needed, matched_rows = sync_processor.check_if_sync_needed()
         
         if not sync_needed:
-            status_box.update(label="✅ Sheet Already Up To Date. No extraction needed!", state="complete", expanded=True)
-            st.success("The Approval worksheet is completely up-to-date with yesterday's approved records. WebPT scraper process skipped safely.")
+            status_box.update(label="✅ Worksheet status validated. No extraction cycle needed!", state="complete", expanded=True)
+            st.success("🎉 The cloud database worksheet is already completely synchronized with yesterday's records. WebPT browsing sequence bypassed safely.")
         else:
-            st.info("New entries detected! Initializing WebPT headless interface processing...")
+            st.info("🆕 Queued modifications detected. spin-locking local Selenium framework configurations...")
             
             driver = create_driver()
             wait = WebDriverWait(driver, WAIT_TIMEOUT)
@@ -373,16 +387,16 @@ if submit:
                 if final_csv:
                     sync_success = sync_processor.sync_data_to_google_sheets(final_csv, matched_rows, selected_agents=chosen_agents)
                     if sync_success:
-                        status_box.update(label="🎉 Process & Google Sheets Sync Completed Successfully!", state="complete", expanded=False)
-                        st.success("Synchronization finished smoothly and live telemetry dispatched.")
+                        status_box.update(label="🎉 System task operations concluded perfectly!", state="complete", expanded=False)
+                        st.success("🚀 Optimization logs compiled, target cells synchronized, and Telegram telemetry successfully dispatched.")
                     else:
-                        status_box.update(label="⚠️ WebPT Scraped, but Google Sheets Sync Failed", state="error", expanded=True)
+                        status_box.update(label="⚠️ Cloud Synchronization Failure", state="error", expanded=True)
             else:
-                st.error("No CSV was recovered from the pipeline execution matrix.")
+                st.error("❌ Pipeline data collection anomaly. Browser context terminated prematurely.")
                 status_box.update(label="❌ Automation script execution halted.", state="error")
                 
     except Exception as e:
-        status_box.update(label="💥 Runtime Exception Encountered", state="error")
+        status_box.update(label="💥 Fatal Pipeline Crash Encountered", state="error")
         st.error(f"Execution Error: {e}")
         
         if driver:
