@@ -58,7 +58,7 @@ def get_valid_agents():
     return ["Mazen", "Mohamed Elgendi", "Nada", "Mohamed Elsherif", "Omar Abdelaziz", "Rana", "Youssef", "Mostafa Kamal", "Philo"]
 
 def fetch_and_filter_main_rows(client):
-    """Loads and filters main sheet entries matching criteria from yesterday."""
+    """Loads and filters main sheet entries matching criteria within the calculated window."""
     main_ss = client.open_by_key(MAIN_SHEET_ID)
     auth_ws = main_ss.worksheet("AuthSheet2026")
     main_rows = auth_ws.get_all_values()
@@ -66,7 +66,19 @@ def fetch_and_filter_main_rows(client):
         return []
 
     main_data_rows = main_rows[1:]
-    yesterday_date = (datetime.now() - timedelta(days=1)).date()
+    
+    # 🔥 NEW: Calculate target date ranges based on day of the week
+    today = datetime.now()
+    target_dates = set()
+
+    if today.weekday() == 0:  # Monday
+        # Collect Friday (3 days ago), Saturday (2 days ago), and Sunday (1 day ago)
+        for days_back in [1, 2, 3]:
+            target_dates.add((today - timedelta(days=days_back)).date())
+        step("Monday matching enabled: Scanning Main Sheet for entries from Friday, Saturday, and Sunday.")
+    else:
+        # Standard lookback: just yesterday
+        target_dates.add((today - timedelta(days=1)).date())
     
     matched_main_rows = []
     for row in main_data_rows:
@@ -89,7 +101,8 @@ def fetch_and_filter_main_rows(client):
             except ValueError:
                 pass
         
-        if parsed_date and parsed_date.date() == yesterday_date:
+        # 🔥 CHANGED: Check if the parsed row date is inside our calculated weekend/yesterday target dates set
+        if parsed_date and parsed_date.date() in target_dates:
             if status_val.lower() in ["approved", "not required", "approved - not required"]:
                 matched_main_rows.append(row)
     return matched_main_rows
@@ -115,14 +128,14 @@ def check_if_sync_needed():
         matched_main_rows = fetch_and_filter_main_rows(client)
         
         if not matched_main_rows:
-            ok("No rows matched criteria for yesterday in Main Sheet. Execution skipped.")
+            ok("No rows matched criteria for the target date window in Main Sheet. Execution skipped.")
             return False, []
             
         existing_keys, _ = get_existing_agent_keys(client)
         unprocessed_rows = [r for r in matched_main_rows if (r[1].strip(), r[5].strip()) not in existing_keys]
         
         if not unprocessed_rows:
-            ok("All records from yesterday are already present in the Approval Sheet. Skipping WebPT Extraction entirely!")
+            ok("All records from the targeted weekend/yesterday range are already present in the Approval Sheet. Skipping WebPT Extraction entirely!")
             return False, []
             
         ok(f"Found {len(unprocessed_rows)} unprocessed rows. Proceeding with WebPT extraction.")
