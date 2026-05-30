@@ -41,7 +41,7 @@ def get_gspread_client():
     return gspread.authorize(creds)
 
 def get_valid_agents():
-    """Fetches the unique historic agent options directly from the Google Sheet."""
+    """Fetches the unique historic agent options directly from the Google Sheet with hardcoded fallbacks."""
     try:
         client = get_gspread_client()
         agent_ss = client.open_by_key(AGENT_SHEET_ID)
@@ -50,10 +50,12 @@ def get_valid_agents():
         
         if len(existing_rows) > 1:
             agents = list(set([r[7].strip() for r in existing_rows[1:] if len(r) > 7 and r[7].strip()]))
-            return sorted(agents)
+            if agents:
+                return sorted(agents)
     except Exception as e:
         fail(f"Failed to fetch live agent pool names from Google Sheet: {e}")
-    return []
+    
+    return ["Mazen", "Mohamed Elgendi", "Nada", "Mohamed Elsherif", "Omar Abdelaziz", "Rana", "Youssef", "Mostafa Kamal", "Philo"]
 
 def fetch_and_filter_main_rows(client):
     """Loads and filters main sheet entries matching criteria from yesterday."""
@@ -176,7 +178,7 @@ def sync_data_to_google_sheets(csv_path, matched_main_rows, selected_agents=None
         clinic = row[0].strip()        
         emr_id = row[1].strip()        
         patient_name = row[2].strip()  
-        update_date = row[5].strip()  
+        update_date = row[5].strip()   
         
         if emr_id in scheduled_patient_ids:
             new_row = [clinic, emr_id, patient_name, update_date, "Already Scheduled", "", "", "", today_stamp]
