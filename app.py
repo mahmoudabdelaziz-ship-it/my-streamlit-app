@@ -85,60 +85,41 @@ def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, 
     return plugin_path
 
 def process_downloaded_data(csv_path):
-    print("🧹 Cleaning and parsing WebPT CSV structures...")
+    print("▶ Processing CSV Data with Pandas")
     try:
-        df = pd.read_csv(csv_path, encoding='utf-8-sig')
-        print(f"📋 Raw CSV Columns Extracted: {list(df.columns)}")
-        
+        df = pd.read_csv(csv_path, encoding='utf-8')
+
+        # Clean every cell: replace corrupt character (U+201A) and literal 'â€š' with normal comma
         df = df.map(
-            lambda x: x.replace('\u201a', ',').replace('â€š', ',').strip()
+            lambda x: x.replace('\u201a', ',').replace('â€š', ',')
             if isinstance(x, str) else x
         )
-        
-        rename_dict = {}
-        for original_col in df.columns:
-            cleaned = str(original_col).strip().lower()
-            
-            if "clinic" in cleaned and "name" in cleaned:
-                rename_dict[original_col] = "Clinic Name"
-            elif ("patient" in cleaned and "name" in cleaned) or ("pt" in cleaned and "name" in cleaned) or (cleaned == "patient") or ("case title" in cleaned):
-                rename_dict[original_col] = "Patient Name"
-            elif ("patient" in cleaned and ("id" in cleaned or "mrn" in cleaned or "account" in cleaned or "emr" in cleaned)) or (cleaned in ["patient id", "pt id"]):
-                rename_dict[original_col] = "Patient ID"
-            elif "therapist" in cleaned or "provider" in cleaned or "case therapist" in cleaned:
-                rename_dict[original_col] = "Treating Therapist"
-            elif "type" in cleaned:
-                rename_dict[original_col] = "Appointment Type"
-            elif "date" in cleaned or "start time" in cleaned:
-                rename_dict[original_col] = "Appointment Date"
-            elif "status" in cleaned or "attend" in cleaned:
-                rename_dict[original_col] = "Visit Status"
+        print("✔ Replaced all corrupted commas with regular commas")
 
-        df = df.rename(columns=rename_dict)
-        
-        target_columns = ["Patient ID", "Patient Name", "Clinic Name", "Treating Therapist", "Appointment Type", "Appointment Date", "Visit Status"]
-        for col in target_columns:
-            if col not in df.columns:
-                print(f"⚠️ Column alignment missing: '{col}'. Generating default placeholder context.")
-                df[col] = "N/A"
-                
+        target_columns = [
+            "Patient ID", "Patient Name", "Clinic Name",
+            "Treating Therapist", "Appointment Type",
+            "Appointment Date", "Visit Status"
+        ]
         df = df[target_columns]
-            
-        excluded_clinics = {'Home Care', 'Sensory Freeway', 'PTOC - Telehealth', '[PTOC - Telehealth]'}
-        df = df[~df["Clinic Name"].isin(excluded_clinics)]
-        
+
         df["Appointment Date"] = pd.to_datetime(df["Appointment Date"], errors="coerce")
-        df = df.sort_values(by=["Visit Status", "Appointment Date", "Clinic Name"], ascending=[True, True, True])
+        df = df.sort_values(
+            by=["Visit Status", "Appointment Date", "Clinic Name"],
+            ascending=[True, True, True]
+        )
         df["Appointment Date"] = df["Appointment Date"].dt.strftime("%Y-%m-%d")
-        
+
         df.to_csv(csv_path, index=False, encoding='utf-8')
-        print("✨ CSV data structures cleaned successfully!")
+        print(f"✔ File processed and overwritten at: {csv_path}")
         return csv_path
-    except Exception as e: 
-        print(f"❌ Failed to parse data rows: {e}")
+        
+    except Exception as e:
+        print(f"✖ Pandas processing failed: {e}")
         return None
 
 def create_driver() -> webdriver.Chrome:
+    print("▶ Launching Chrome browser")
     options = webdriver.ChromeOptions()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
@@ -183,10 +164,11 @@ def create_driver() -> webdriver.Chrome:
         "downloadPath": DOWNLOAD_PATH
     })
     
+    print("✔ Browser launched successfully")
     return driver
 
 def wait_for_new_csv(download_dir, before_files, timeout=120):
-    print("⏳ Watching target folder for incoming WebPT report...")
+    print("→ Waiting for the file to download...")
     end_time = time.time() + timeout
     while time.time() < end_time:
         current_files = set(os.listdir(download_dir))
@@ -196,64 +178,68 @@ def wait_for_new_csv(download_dir, before_files, timeout=120):
         
         if new_csvs and not active_downloads: 
             time.sleep(2)
-            target_file = os.path.join(download_dir, new_csvs[0])
-            print(f"📥 File captured successfully: {new_csvs[0]}")
-            return target_file
+            file_name = new_csvs[0]
+            print(f"✔ Download complete: {file_name}")
+            return os.path.join(download_dir, file_name)
             
-        time.sleep(1.5)
-    raise TimeoutError(f"WebPT initiated export, but no file arrived in {timeout} seconds.")
+        time.sleep(1)
+    print("⚠ Download timed out.")
+    return None
 
 def login(driver, wait):
-    print("🚀 Navigating to WebPT Login Page...")
+    print("▶ Logging in to WebPT")
     driver.get(WEBPT_URL)
-    print("✍️ Entering Credentials...")
+    
     wait.until(EC.presence_of_element_located((By.ID, "username"))).send_keys(USERNAME)
     driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
     wait.until(EC.presence_of_element_located((By.ID, "password"))).send_keys(PASSWORD)
     driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
     time.sleep(5)
     try: 
-        driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//button[contains(text(), 'Yes, oust them!')]"))
-        print("💥 Displaced another active session token successfully.")
+        oust_btn = driver.find_element(By.XPATH, "//button[contains(text(), 'Yes, oust them!')]")
+        driver.execute_script("arguments[0].click();", oust_btn)
+        print("✔ Clicked 'Yes, oust them!' button")
     except: 
-        pass
+        print("No 'Oust' prompt appeared.")
+        
     wait.until(EC.presence_of_element_located((By.LINK_TEXT, "Advanced Search")))
-    print("🔓 Logged in successfully!")
+    print("✔ Login successful")
 
 def open_analytics(driver, wait):
-    print("📊 Accessing WebPT Analytics Engine Hub...")
+    print("▶ Opening Analytics tab")
     main_window = driver.current_window_handle
-    driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".analytics-icon"))))
+    btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".analytics-icon")))
+    driver.execute_script("arguments[0].click();", btn)
     
-    window_wait_timeout = time.time() + 15
-    while len(driver.window_handles) == 1:
-        if time.time() > window_wait_timeout:
-            raise TimeoutError("WebPT Analytics multi-window execution target took too long to load.")
-        time.sleep(0.5)
-        
-    driver.switch_to.window([w for w in driver.window_handles if w != main_window][0])
+    wait.until(EC.new_window_is_opened([main_window]))
+    new_window = [w for w in driver.window_handles if w != main_window][0]
+    driver.switch_to.window(new_window)
+    
     WebDriverWait(driver, 60).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-    print("🎯 Successfully focused Analytics tab frame.")
+    print("✔ Switched to Analytics dashboard")
 
 def locate_options_button(driver):
     try:
         btn = WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.ID, "OptionsBtn")))
+        print("Options button found in main content")
         return btn
     except:
-        pass
+        print("Options not in default content – checking iframes")
 
     iframes = driver.find_elements(By.TAG_NAME, "iframe")
+    print(f"Found {len(iframes)} iframes")
     for idx, iframe in enumerate(iframes):
         try:
             driver.switch_to.frame(iframe)
             btn = WebDriverWait(driver, 15).until(EC.element_to_be_clickable((By.ID, "OptionsBtn")))
+            print(f"Found Options button inside iframe #{idx}")
             return btn
         except:
             driver.switch_to.default_content()
     return None
 
 def navigate_scheduled_visits(driver, wait):
-    print("📂 Expanding Reports UI layout...")
+    print("▶ Navigating to Scheduled Visits Report")
     long_wait = WebDriverWait(driver, 60)
     short_wait = WebDriverWait(driver, 15)
     
@@ -264,81 +250,102 @@ def navigate_scheduled_visits(driver, wait):
         print(f"  → Attempt {attempt + 1} of {max_attempts} to click Scheduled Visits...")
         try:
             reports_menu = WebDriverWait(driver, 10).until(EC.element_to_be_clickable(
-                (By.XPATH, "//div[@id='REPORTS'] | //div[text()='REPORTS'] | //span[text()='REPORTS']")
+                (By.XPATH, "//div[@id='REPORTS'] | //div[text()='REPORTS']")
             ))
             driver.execute_script("arguments[0].click();", reports_menu)
             time.sleep(1.5)
             
-            sv_xpath = "//div[@id='scheduled_visits']//span[text()='Scheduled Visits'] | //div[@id='scheduled_visits'] | //a[contains(text(), 'Scheduled Visits')]"
+            sv_xpath = "//div[@id='scheduled_visits']//span[text()='Scheduled Visits'] | //div[@id='scheduled_visits']"
             sv_link = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, sv_xpath)))
             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", sv_link)
             time.sleep(0.5)
-            driver.execute_script("arguments[0].click();", sv_link)
+            
+            try:
+                sv_link.click()
+            except:
+                driver.execute_script("arguments[0].click();", sv_link)
 
+            print("▶ Checking if the click registered...")
             short_wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".k-grid, #reportContainer, #OptionsBtn")))
+            print("✔ Confirmed: Scheduled Visits page is loading!")
             page_loaded = True
             break
         except:
-            pass
+            print("⚠ The click didn't register or the page didn't load. Retrying...")
             
     if not page_loaded:
         raise Exception("Failed to open the Scheduled Visits report after 3 attempts.")
         
+    print("▶ Waiting for background data to finish loading")
     try:
         long_wait.until_not(EC.presence_of_element_located((By.CSS_SELECTOR, ".k-loading-mask, .blockUI, .progress-indicator")))
+        print("✔ No active loading overlay")
     except:
         pass
         
-    print("⚙️ Locating options configuration overlay panel...")
+    print("▶ Looking for Options button")
     options_btn = locate_options_button(driver)
     if not options_btn:
         raise Exception("Could not locate the Options button (ID='OptionsBtn')")
         
+    print("✔ Options button located – opening column chooser")
     driver.execute_script("arguments[0].click();", options_btn)
     time.sleep(2)
     
+    print("▶ Clearing old selections")
     try:
         mark_all_span = driver.find_element(By.XPATH, "//span[text()='(All)']")
         driver.execute_script("arguments[0].click();", mark_all_span)
         time.sleep(1)
         driver.execute_script("arguments[0].click();", mark_all_span)
+        print("✔ Columns cleared")
     except:
-        pass
+        print("⚠ Could not clear columns – continuing")
         
-    webpt_ui_labels = ["Clinic Name", "Case Title", "Patient ID", "Case Therapist", "Start Time", "Likelihood to Attend"]
-    for col in webpt_ui_labels:
+    required_columns = [
+        "Clinic Name", "Patient Name", "Patient ID",
+        "Treating Therapist", "Appointment Type",
+        "Appointment Date", "Visit Status"
+    ]
+    for col in required_columns:
         try: 
-            cb = driver.find_element(By.XPATH, f"//span[text()='{col}']/preceding-sibling::input | //label[contains(., '{col}')]//input")
-            if not cb.is_selected():
-                driver.execute_script("arguments[0].click();", cb)
+            xpath = f"//span[text()='{col}']/preceding-sibling::input | //label[contains(., '{col}')]//input"
+            cb = driver.find_element(By.XPATH, xpath)
+            driver.execute_script("arguments[0].click();", cb)
         except: 
-            pass
+            print(f"⚠ Column '{col}' not found – possibly already selected")
             
-    print("💾 Confirming layout mutations...")
     apply_btn = driver.find_element(By.XPATH, "//button[contains(text(),'Apply')] | //*[@id='lblLayoutOk']")
     driver.execute_script("arguments[0].click();", apply_btn)
     time.sleep(3)
     
-    print("📅 Applying date range filters...")
+    print("▶ Applying date filter")
     today = datetime.now()
     end_date = "12/31/2060"
     if today.weekday() == 0:
         start_date = (today - timedelta(days=3)).strftime("%m/%d/%Y")
+        print(f"Monday logic: Extracting from last Friday ({start_date}) through 2060.")
     else:
         start_date = (today - timedelta(days=1)).strftime("%m/%d/%Y")
+        print(f"Standard logic: Extracting from yesterday ({start_date}) through 2060.")
         
     try:
         driver.execute_script(f"if(document.getElementById('inpDateStart')) document.getElementById('inpDateStart').value = '{start_date}';")
         driver.execute_script(f"if(document.getElementById('inpDateEnd')) document.getElementById('inpDateEnd').value = '{end_date}';")
-        driver.find_element(By.ID, "btnApplyDateFilter").click()
+        apply_date = driver.find_element(By.ID, "btnApplyDateFilter")
+        driver.execute_script("arguments[0].click();", apply_date)
+        print(f"✔ Date filter applied: {start_date} to {end_date}")
     except: 
-        pass
+        print("⚠ Could not set date filter – manually check the report range")
     time.sleep(5)
     
-    print("📥 Triggering report download click...")
+    print("▶ Exporting to CSV")
     before_files = set(os.listdir(DOWNLOAD_PATH))
-    driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.ID, "ExportDataBtn"))))
-    driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.XPATH, "//*[text()='CSV']"))))
+    export_btn = wait.until(EC.element_to_be_clickable((By.ID, "ExportDataBtn")))
+    driver.execute_script("arguments[0].click();", export_btn)
+    
+    csv_opt = wait.until(EC.element_to_be_clickable((By.XPATH, "//*[text()='CSV']")))
+    driver.execute_script("arguments[0].click();", csv_opt)
     
     return wait_for_new_csv(DOWNLOAD_PATH, before_files)
 
