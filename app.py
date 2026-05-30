@@ -23,7 +23,6 @@ import sync_processor
 # =====================================================================
 st.set_page_config(page_title="WebPT Automation Dashboard", page_icon="⚡", layout="centered")
 
-# Custom CSS for a cleaner, modern interface
 st.markdown("""
     <style>
     .main-title { font-size: 2.2rem; font-weight: 700; color: #1E88E5; margin-bottom: 0.5rem; }
@@ -341,7 +340,6 @@ def navigate_scheduled_visits(driver, wait):
 # =====================================================================
 available_agents = sync_processor.get_valid_agents()
 
-# Use a container card style for the main controls form
 with st.container(border=True):
     st.markdown('<div class="step-header">👥 Step 1: Assign Active Team Members</div>', unsafe_allow_html=True)
     chosen_agents = st.multiselect(
@@ -356,7 +354,7 @@ with st.container(border=True):
 
 if submit:
     st.markdown('<div class="step-header">⚙️ Live Pipeline Execution Console</div>', unsafe_allow_html=True)
-    status_box = st.status("Establishing handshake with Google Sheets database cluster...", expanded=True)
+    status_box = st.status("Connecting to Google Sheets for structural pre-check...", expanded=True)
     log_container = status_box.empty()
     
     streamlit_handler = StreamlitLogHandler(log_container)
@@ -367,33 +365,33 @@ if submit:
     
     driver = None
     try:
+        # 🔥 CHANGED: Pre-check is used only to gather rows, not to exit early
         sync_needed, matched_rows = sync_processor.check_if_sync_needed()
         
         if not sync_needed:
-            status_box.update(label="✅ Worksheet status validated. No extraction cycle needed!", state="complete", expanded=True)
-            st.success("🎉 The cloud database worksheet is already completely synchronized with yesterday's records. WebPT browsing sequence bypassed safely.")
+            st.info("ℹ️ Cloud approval tracking rows are currently up to date. Extracting WebPT report data anyway as requested...")
         else:
-            st.info("🆕 Queued modifications detected. spin-locking local Selenium framework configurations...")
+            st.info("🆕 Queued modifications detected. Initializing WebPT data extraction match...")
             
-            driver = create_driver()
-            wait = WebDriverWait(driver, WAIT_TIMEOUT)
-            
-            login(driver, wait)
-            open_analytics(driver, wait)
-            raw_csv = navigate_scheduled_visits(driver, wait)
-            
-            if raw_csv:
-                final_csv = process_downloaded_data(raw_csv)
-                if final_csv:
-                    sync_success = sync_processor.sync_data_to_google_sheets(final_csv, matched_rows, selected_agents=chosen_agents)
-                    if sync_success:
-                        status_box.update(label="🎉 System task operations concluded perfectly!", state="complete", expanded=False)
-                        st.success("🚀 Optimization logs compiled, target cells synchronized, and Telegram telemetry successfully dispatched.")
-                    else:
-                        status_box.update(label="⚠️ Cloud Synchronization Failure", state="error", expanded=True)
-            else:
-                st.error("❌ Pipeline data collection anomaly. Browser context terminated prematurely.")
-                status_box.update(label="❌ Automation script execution halted.", state="error")
+        driver = create_driver()
+        wait = WebDriverWait(driver, WAIT_TIMEOUT)
+        
+        login(driver, wait)
+        open_analytics(driver, wait)
+        raw_csv = navigate_scheduled_visits(driver, wait)
+        
+        if raw_csv:
+            final_csv = process_downloaded_data(raw_csv)
+            if final_csv:
+                sync_success = sync_processor.sync_data_to_google_sheets(final_csv, matched_rows, selected_agents=chosen_agents)
+                if sync_success:
+                    status_box.update(label="🎉 System task operations concluded perfectly!", state="complete", expanded=False)
+                    st.success("🚀 Optimization logs compiled, WebPT report exported, and data alignment check completed successfully.")
+                else:
+                    status_box.update(label="⚠️ Cloud Synchronization Failure", state="error", expanded=True)
+        else:
+            st.error("❌ Pipeline data collection anomaly. Browser context terminated prematurely.")
+            status_box.update(label="❌ Automation script execution halted.", state="error")
                 
     except Exception as e:
         status_box.update(label="💥 Fatal Pipeline Crash Encountered", state="error")
